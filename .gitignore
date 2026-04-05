@@ -1,5 +1,3 @@
-.agent/
-.claude/
 .venv/
 static/
 .env
