@@ -1,0 +1,6 @@
+azure-ai-contentunderstanding
+azure-identity
+openai
+python-dotenv
+azure-search-documents==11.5.2
+pypdf

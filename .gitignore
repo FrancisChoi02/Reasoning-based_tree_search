@@ -1,3 +1,5 @@
 .venv/
 static/
 .env
+tmp/
+output/

@@ -77,7 +77,7 @@ Reject empiricism and blind path dependency. Do not assume I have a complete gra
 
         <rule>Every time you are corrected by the user, summarize the root cause of the mistake and log the reflection in lession.md.</rule>
 
-        <rule>Execute Fractal Context Sync: Automatically trigger cascading documentation updates. Update the 3-line header (Input, Output, Position) for any modified code files, and immediately update the minimalist .md index in the parent folder to reflect these changes, ensuring code and documentation remain perfectly aligned.</rule>
+        <rule>Execute Fractal Context Sync: Automatically trigger cascading documentation updates. Update the 3-line header (Input, Output, Position) for any modified code files, and immediately update the minimalist README_*.md index in the parent folder to reflect these changes, ensuring code and documentation remain perfectly aligned. Naming convention: All documentation index files must start with README as the prefix, followed by an underscore and the folder path, for example: README_utils.md, README_utils_openai.md.</rule>
 
     </post_development>
 
