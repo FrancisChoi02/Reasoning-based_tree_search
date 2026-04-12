@@ -1,7 +1,10 @@
 # utils index
 
-- `utils/ai_search.py` — Azure AI Search index creation (with `company_name`/`year` filterable fields), schema synchronization, document ingestion, and hybrid/vector query helpers.
-- `utils/azure_ingest_pipeline.py` — End-to-end local PDF ingest pipeline from Content Understanding into Azure AI Search. Accepts `company_name` and `year` as input parameters for chunk-level metadata.
-- `utils/azure_openai.py` — Azure OpenAI embedding client and embedding helper functions.
-- `utils/content_understanding.py` — Azure Content Understanding client, default model deployment setup, and markdown-block extraction for local PDFs. Splits large PDFs into 50-page batches to stay within API limits. Injects `company_name` and `year` into every extracted document dict.
-- `utils/cosmosdb.py` — Placeholder for Cosmos DB integration.
+| Sub-folder | README | Purpose |
+|---|---|---|
+| `azure_openai/` | [README_azure_openai.md](azure_openai/README_azure_openai.md) | Azure OpenAI client, AI Search integration, Content Understanding extraction |
+| `database/` | [README_database.md](database/README_database.md) | SQLite DB init, JSON-to-DB loader, document queries |
+| `tree_search_related/` | [README_tree_search_related.md](tree_search_related/README_tree_search_related.md) | PDF-to-JSON pipeline, prompt templates, TreeNode + MCTS utilities |
+| `vector_search_related/` | [README_vector_search_related.md](vector_search_related/README_vector_search_related.md) | End-to-end PDF ingest pipeline into Azure AI Search |
+
+If folder contents change, update this index.

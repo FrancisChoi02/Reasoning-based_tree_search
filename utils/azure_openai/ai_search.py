@@ -22,8 +22,8 @@ from azure.search.documents.indexes.models import (
 from azure.search.documents.models import VectorizedQuery
 from dotenv import load_dotenv
 
-from utils.azure_ingest_pipeline import build_search_documents
-from utils.azure_openai import get_embedding, get_embeddings_batch, get_embedding_dimensions
+from utils.vector_search_related.azure_ingest_pipeline import build_search_documents
+from utils.azure_openai.azure_openai import get_embedding, get_embeddings_batch, get_embedding_dimensions
 
 load_dotenv()
 

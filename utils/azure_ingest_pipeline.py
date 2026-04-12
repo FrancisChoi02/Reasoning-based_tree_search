@@ -6,7 +6,7 @@ import hashlib
 import json
 from typing import Any, Dict, List
 
-from utils.content_understanding import analyze_local_pdf, extract_content_understanding_documents, save_analysis_to_local_txt
+from utils.azure_openai.content_understanding import analyze_local_pdf, extract_content_understanding_documents, save_analysis_to_local_txt
 
 
 def _build_document_id(document: Dict[str, Any]) -> str:
@@ -68,7 +68,7 @@ def ingest_local_pdf(
     year: int = 0,
     save_to_txt: bool = False,
 ) -> Dict[str, Any]:
-    from utils.ai_search import ingest_documents
+    from utils.azure_openai.ai_search import ingest_documents
 
     print(f"\n[PIPELINE] Starting ingestion for PDF: {pdf_path}")
     print("[1/2] Analyzing PDF and extracting content...")
