@@ -1,12 +1,11 @@
 # Input: CLI args for PDF path, model, and pipeline runtime controls.
 # Output: Executes the PDF->JSON pipeline and prints extraction summary plus resulting JSON.
-# Position: Root-level manual test runner for utils.pdf_json_pipeline. If modified, update this header and the parent folder's .md index.
+# Position: Root-level manual test runner for utils.tree_search_related.pdf_json_pipeline. If modified, update this header and the parent folder's .md index.
 
 import argparse
 import json
-from tabnanny import verbose
 
-from utils.pdf_json_pipeline import run_pdf_json_pipeline
+from utils.tree_search_related.pdf_json_pipeline import run_pdf_json_pipeline
 
 
 def _positive_int(value: str) -> int:

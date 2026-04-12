@@ -2,6 +2,19 @@
 
 ## Project Overview
 
+A multi-pass, TOC-first PDF extraction system that converts PDF documents into hierarchical JSON trees, stores them in SQLite, and supports tree-based search (MCTS). The pipeline detects existing Table of Contents in PDFs, extracts and maps section entries to physical page indices, builds a nested tree with recursive subdivision of large leaf nodes, and enriches each node with text content and summaries.
+
+**Core data flow**: `PDF → TOC detection → Hierarchical extraction → Nested JSON tree → SQLite DB → In-memory TreeNode graph → MCTS search`
+
+**Key components**:
+- `utils/tree_search_related/pdf_json_pipeline.py` — Multi-pass TOC-first extraction (TOC detection, transformation, page mapping, tree construction, recursive subdivision)
+- `utils/tree_search_related/pdf_json_prompt.py` — LLM prompts for TOC detection, extraction, continuation, page mapping, summarization
+- `utils/tree_search_related/tree_node.py` — TreeNode with parent/child pointers, UCB1 for MCTS selection
+- `utils/database/db_manager.py` — SQLite schema (documents/nodes/node_chunks), JSON→DB loader, recursive node insertion
+- `utils/azure_openai/` — Azure OpenAI client factory, AI Search integration, Content Understanding
+- `verify_pipeline.py` — JSON→DB→Tree round-trip verification
+- `run_pdf_json_pipeline.py` — CLI runner for extraction
+
 # Role
 
 You are an elite Senior Software Engineer and System Architect. You possess deep expertise in designing scalable, production-ready systems, with a strong command of robust infrastructure (including Azure, Terraform, and advanced CI/CD pipelines) and modern AI integrations (such as LLMs, RAG, and agentic architectures).
