@@ -11,11 +11,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from openai import APIError
 from pypdf import PdfReader
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from utils.azure_openai.azure_openai import get_azure_openai_client, get_chat_deployment_name
+from utils.azure_openai.azure_openai import (
+    ChatCompletionRequest,
+    call_chat_completion,
+)
 from utils.tree_search_related.pdf_json_prompt import (
     build_toc_detection_prompt,
     build_toc_extraction_prompt,
@@ -239,10 +241,6 @@ def assign_node_ids(tree: List[Dict[str, Any]], start_id: int = 0) -> int:
 # Phase 2: LLM Wrappers
 # ═══════════════════════════════════════════════════════════════════════════
 
-def _get_model() -> str:
-    return "gpt-5.4"
-
-
 def call_llm_raw(
     *,
     prompt: str,
@@ -255,35 +253,16 @@ def call_llm_raw(
 
     Does NOT use response_format=json_object so the model can return plain text.
     """
-    client = get_azure_openai_client()
-    messages: List[Dict[str, str]] = []
-    if system_instruction:
-        messages.append({"role": "system", "content": system_instruction})
-    messages.append({"role": "user", "content": prompt})
-
-    for attempt in range(1, max_retries + 1):
-        try:
-            response = client.chat.completions.create(
-                model=_get_model(),
-                messages=messages,
-                temperature=temperature,
-            )
-            content = response.choices[0].message.content or ""
-            usage = {
-                "prompt_tokens": getattr(response.usage, "prompt_tokens", 0) or 0,
-                "completion_tokens": getattr(response.usage, "completion_tokens", 0) or 0,
-                "total_tokens": getattr(response.usage, "total_tokens", 0) or 0,
-            }
-            finish_reason = response.choices[0].finish_reason or "unknown"
-            return content, usage, finish_reason
-        except (APIError, ValueError, IndexError, KeyError) as exc:
-            if verbose:
-                print(f"[RETRY] LLM call attempt {attempt}/{max_retries} failed: {exc}")
-            if attempt == max_retries:
-                raise
-            time.sleep(1)
-
-    raise RuntimeError("Unreachable retry state")
+    result = call_chat_completion(
+        ChatCompletionRequest(
+            prompt=prompt,
+            system_instruction=system_instruction,
+            max_retries=max_retries,
+            temperature=temperature,
+        ),
+        verbose=verbose,
+    )
+    return result.content, result.usage, result.finish_reason
 
 
 def call_llm_json(
@@ -335,36 +314,17 @@ def call_extraction_llm(
     verbose: bool = True,
 ) -> Tuple[Dict[str, Any], Dict[str, int]]:
     """Legacy direct-JSON extraction call (kept for backward compatibility)."""
-    selected_model = _get_model()
-    client = get_azure_openai_client()
-    messages: List[Dict[str, str]] = []
-    if system_instruction:
-        messages.append({"role": "system", "content": system_instruction})
-    messages.append({"role": "user", "content": prompt})
-
-    for attempt in range(1, max_retries + 1):
-        try:
-            response = client.chat.completions.create(
-                model=selected_model,
-                messages=messages,
-                temperature=temperature,
-                response_format={"type": "json_object"},
-            )
-            raw_content = response.choices[0].message.content or ""
-            usage = {
-                "prompt_tokens": getattr(response.usage, "prompt_tokens", 0) or 0,
-                "completion_tokens": getattr(response.usage, "completion_tokens", 0) or 0,
-                "total_tokens": getattr(response.usage, "total_tokens", 0) or 0,
-            }
-            return extract_json_payload(raw_content), usage
-        except (APIError, ValueError, IndexError, KeyError) as exc:
-            if verbose:
-                print(f"[RETRY] LLM extraction attempt {attempt}/{max_retries} failed: {exc}")
-            if attempt == max_retries:
-                raise
-            time.sleep(1)
-
-    raise RuntimeError("Unreachable retry state")
+    result = call_chat_completion(
+        ChatCompletionRequest(
+            prompt=prompt,
+            system_instruction=system_instruction,
+            max_retries=max_retries,
+            temperature=temperature,
+            response_format={"type": "json_object"},
+        ),
+        verbose=verbose,
+    )
+    return extract_json_payload(result.content), result.usage
 
 
 # ═══════════════════════════════════════════════════════════════════════════

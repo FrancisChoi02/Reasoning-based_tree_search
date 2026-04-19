@@ -1,5 +1,34 @@
 # Lessons Learned
 
+## 2026-04-17: Add a root-level MCTS search smoke test for document-tree querying
+
+**Root cause**: The repo had extraction verification and direct Azure chat transport verification, but no narrow root-level runner for the actual MCTS query path. That made search-layer debugging slower because tree traversal, scoring prompts, and synthesis could only be reasoned about indirectly.
+
+**Fix**: Add `test_mcts_search.py` at the repo root so document-tree MCTS search can be exercised directly with one question, one document, and explicit pass/fail checks.
+
+**Prevention**: Whenever a new orchestration layer is introduced on top of shared transport utilities, add one root-level smoke test that validates the orchestration path directly before relying on larger end-to-end flows.
+
+---
+
+
+**Root cause**: The previous manual validation path depended on the full PDF pipeline, which mixes extraction flow concerns with Azure chat transport concerns. That makes concurrency debugging slower and noisier.
+
+**Fix**: Add `test_call_chat_completions_batch.py` at the repo root so the shared `call_chat_completions_batch(...)` wrapper can be tested directly for ordered concurrent execution.
+
+**Prevention**: When introducing shared transport primitives, always add one narrow root-level smoke test that exercises the primitive directly before validating it through larger pipelines.
+
+---
+
+## 2026-04-17: Centralize Azure OpenAI chat calling before adding MCTS concurrency
+
+**Root cause**: The codebase duplicated Azure chat completion logic inside `pdf_json_pipeline.py`, while concurrency lived only at the caller layer. That would have forced MCTS to add another custom calling path, making retries, ordering, and rate-limit handling inconsistent.
+
+**Fix**: Move chat completion transport into `utils/azure_openai/azure_openai.py` with one normalized single-call wrapper and one ordered concurrent batch wrapper built on top of it. Then refactor pipeline helpers to consume that shared path.
+
+**Prevention**: Before adding LLM-heavy features like MCTS, centralize request transport first. Retrieval logic should not own SDK wiring, retry math, or concurrency primitives.
+
+---
+
 ## 2026-04-12: end_index < start_index in tree construction
 
 **Root cause**: When adjacent TOC entries share the same physical page and `appear_start == "yes"`, `post_process_toc_to_tree` computed `end_index = next_physical_index - 1`, which can equal `start_index - 1`. Same issue in `subdivide_large_nodes` when adjusting parent boundaries after subdivision.

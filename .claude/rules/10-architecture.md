@@ -31,6 +31,7 @@
 ├── README.md
 ├── requirements.txt                     # Python dependencies
 ├── run_pdf_json_pipeline.py             # CLI runner for PDF→JSON extraction
+├── test_call_chat_completions_batch.py  # CLI smoke test for ordered concurrent Azure chat completions
 ├── verify_pipeline.py                   # JSON→DB→Tree round-trip verification
 │
 ├── static/                              # PDF inputs and persisted JSON outputs
