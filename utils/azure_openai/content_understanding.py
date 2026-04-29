@@ -55,7 +55,7 @@ def get_content_understanding_client() -> ContentUnderstandingClient:
 def configure_content_understanding_defaults() -> None:
     get_content_understanding_client().update_defaults(
         model_deployments={
-            "gpt-4.1": get_content_understanding_chat_deployment_name(),
+            "gpt-5.4": get_content_understanding_chat_deployment_name(),
             "text-embedding-3-large": get_content_understanding_embedding_deployment_name(),
         }
     )

@@ -1,5 +1,23 @@
 # Progress Log
 
+## 2026-04-23: MCTS Search Engine + Root Smoke Test (Milestone 3)
+
+**What**: Added the forest-aware `MCTSQuery` search path and aligned the root-level smoke test and docs with the implemented interface.
+
+**Files modified**:
+- `utils/tree_search_related/mcts_search.py` — MCTS orchestration with root priors, leaf scoring, backpropagation, source ranking, and answer synthesis
+- `utils/tree_search_related/pdf_json_prompt.py` — Added MCTS prior/evaluation/synthesis prompts
+- `test_mcts_search.py` — Root-level manual smoke test for one document and one query
+- `README.md` — Added the MCTS smoke-test usage example
+- `utils/tree_search_related/README_tree_search_related.md` — Added `mcts_search.py` to the module index
+
+**Current result**:
+- Query input → tree search → synthesized answer path exists
+- Smoke test validates non-empty answer, non-empty sources, visited leaves, and iteration echo
+- Multi-document search remains out of scope
+
+---
+
 ## 2026-04-12: TOC-First Extractor Upgrade (Milestone 2)
 
 **What**: Refactored `pdf_json_pipeline.py` from flat single-pass extraction to multi-pass TOC-first hierarchical extraction, integrating logic from the pageindex sample (`.agent/design/pageindex_sample/`).

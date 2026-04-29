@@ -27,8 +27,8 @@ python verify_pipeline.py
 # Test direct concurrent batch chat completions
 python test_call_chat_completions_batch.py --count 8 --max-workers 4 --verbose
 
-# Test MCTS tree search against a loaded document
-python test_mcts_search.py --db-path verify_test.db --doc-pk 1 --query "What was Unilever's revenue in 2022?"
+# Test MCTS tree search smoke path against a loaded document
+python test_mcts_search.py --db-path verify_test.db --doc-pk 1 --query "What was Unilever's revenue in 2022?" --iterations 10 --top-k 3 --verbose
 ```
 
 ## Project Structure

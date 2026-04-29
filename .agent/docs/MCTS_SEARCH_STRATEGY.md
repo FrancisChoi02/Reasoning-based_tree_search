@@ -205,26 +205,26 @@ Provide a comprehensive answer. Cite page numbers where relevant.
 
 ***
 
-## 4. Minimally Runnable Version (MVP)
+## 4. Current Runnable Version
 
-### What to build
+### Implemented pieces
 
-One new file: `utils/tree_search_related/mcts_search.py`
+The current repo already includes `utils/tree_search_related/mcts_search.py`.
 
 This file contains:
 
 1. `MCTSQuery` class — orchestrates the search loop
-2. Two new prompts in `pdf_json_prompt.py` — relevance scoring + answer synthesis
+2. MCTS prompt builders in `pdf_json_prompt.py` — prior scoring, leaf evaluation, and answer synthesis
 
 ### File layout
 
 ```
 utils/tree_search_related/
-├── mcts_search.py        ← NEW: MCTS orchestration + answer synthesis
-├── pdf_json_prompt.py    ← MODIFY: add 2 prompts (relevance + synthesis)
+├── mcts_search.py        ← IMPLEMENTED: MCTS orchestration + answer synthesis
+├── pdf_json_prompt.py    ← IMPLEMENTED: TOC prompts + MCTS prompts
 ├── pdf_json_pipeline.py  ← NO CHANGE
 ├── tree_node.py          ← NO CHANGE (already has UCB1, visits, values)
-└── README_tree_search_related.md  ← UPDATE: add mcts_search.py entry
+└── README_tree_search_related.md  ← UPDATED: includes mcts_search.py entry
 ```
 
 ### `mcts_search.py` — Class design
@@ -237,79 +237,85 @@ class MCTSQuery:
         self,
         doc_pk: int,
         db_path: str = "tree_poc.db",
-        model: str = "gpt-5.4",
         num_iterations: int = 10,
         top_k: int = 3,
         exploration_weight: float = 1.414,
-        max_eval_tokens: int = 3000,
+        max_eval_chars: int = 3000,
+        max_workers: int = 4,
+        virtual_visits: int = 3,
+        verbose: bool = False,
     ):
-        # Load tree from DB, store config
+        # Load forest from DB, store config
 
     def search(self, query: str) -> dict:
-        """Run MCTS and return top-K results with synthesized answer."""
-        self._reset_tree()          # Zero out visit_count/value_sum
-        for _ in range(self.num_iterations):
-            leaf = self._select()   # UCB1 traversal
-            score = self._evaluate(leaf, query)  # LLM scores relevance
-            self._backpropagate(leaf, score)      # Update ancestors
-        top_leaves = self._collect_top_k()
-        answer = self._synthesize(query, top_leaves)  # LLM generates answer
+        """Run MCTS and return ranked sources with a synthesized answer."""
         return {
             "query": query,
-            "answer": answer,
+            "answer": "...",
             "sources": [
                 {
-                    "title": leaf.title,
-                    "pages": f"{leaf.start_index}-{leaf.end_index}",
-                    "score": leaf.value,
-                    "visits": leaf.visit_count,
+                    "node_pk": 1,
+                    "title": "...",
+                    "pages": "10-12",
+                    "score": 0.92,
+                    "visits": 5,
+                    "path": ["Root", "Section", "Leaf"],
                 }
-                for leaf in top_leaves
             ],
             "iterations": self.num_iterations,
+            "visited_leaf_count": 1,
         }
 ```
 
 ### New prompts in `pdf_json_prompt.py`
 
 ```python
-def build_relevance_prompt(query: str, title: str, text_excerpt: str) -> str:
+def build_prior_scoring_prompt(query: str, siblings: list[dict]) -> str:
+    """Prompt for scoring sibling priors before traversal."""
+
+def build_leaf_eval_prompt(
+    query: str,
+    path: str,
+    title: str,
+    text_head: str,
+    text_tail: str,
+    summary: str | None = None,
+) -> str:
     """Prompt for scoring a leaf node's relevance to a query."""
 
 def build_synthesis_prompt(query: str, sections: list[dict]) -> str:
     """Prompt for synthesizing an answer from top-K relevant sections."""
 ```
 
-### Runner: `run_mcts_search.py` (new CLI entry point)
+### Runner: `test_mcts_search.py` (root-level smoke test)
 
 ```python
 # Usage:
-python run_mcts_search.py --db tree_poc.db --doc "Unilever - FY22.pdf" \
-    --query "What was Unilever's revenue in 2022?" --iterations 10
+python test_mcts_search.py --db-path verify_test.db --doc-pk 1 \
+    --query "What was Unilever's revenue in 2022?" --iterations 10 --top-k 3 --verbose
 ```
 
 ### Dependency graph
 
 ```
-run_mcts_search.py
+test_mcts_search.py
   └── mcts_search.py
-        ├── tree_node.py          (load_tree_from_db, collect_leaves, TreeNode)
-        ├── pdf_json_prompt.py    (build_relevance_prompt, build_synthesis_prompt)
-        ├── db_manager.py         (get_document — lookup doc_pk by name)
-        └── azure_openai.py       (get_azure_openai_client, get_chat_deployment_name)
+        ├── tree_node.py          (TreeNode, collect_leaves)
+        ├── pdf_json_prompt.py    (build_prior_scoring_prompt, build_leaf_eval_prompt, build_synthesis_prompt)
+        ├── db_manager.py         (get_document — lookup doc_pk by id or name)
+        └── azure_openai.py       (ChatCompletionRequest, call_chat_completion)
 ```
 
-### Test plan
+### Smoke-test plan
 
 | Test                              | Method                                                                                          | Expected                                                  |
 | --------------------------------- | ----------------------------------------------------------------------------------------------- | --------------------------------------------------------- |
-| MCTS converges on correct subtree | Query "What was revenue in 2022?" → check that top leaves are in "Financial Statements" subtree | Top-3 leaves under `Financial Statements` root            |
-| Answer quality                    | Query "Who is the CEO?" → answer mentions the CEO by name                                       | Correct name from "Strategic Report > Review of the Year" |
-| Cold start exploration            | First 5 iterations visit 5 different subtrees                                                   | visit\_count distributed across >3 roots                  |
-| Empty query handling              | Pass empty string                                                                               | Raise ValueError                                          |
-| Single-iteration fallback         | num\_iterations=1                                                                               | Returns exactly 1 source, answer still valid              |
+| Root-level smoke test runs end-to-end | Run `python test_mcts_search.py --db-path verify_test.db --doc-pk 1 --query "What was revenue in 2022?" --iterations 10 --top-k 3 --verbose` | Non-empty answer, non-empty sources, `iterations` matches input |
+| Alternate query path works | Run `python test_mcts_search.py --db-path verify_test.db --doc-pk 1 --query "Who is the CEO?" --iterations 10 --top-k 3 --verbose` | Same basic pass conditions hold for a second query |
+| Empty query handling | Pass empty string | Raise ValueError |
+| Single-iteration fallback | `num_iterations=1` | At least one visited leaf and one returned source |
 
-### What this MVP does NOT include (future milestones)
+### What this current version does NOT include (future milestones)
 
 | Feature                                 | Milestone | Why deferred                                                                     |
 | --------------------------------------- | --------- | -------------------------------------------------------------------------------- |
@@ -319,11 +325,11 @@ run_mcts_search.py
 | Adaptive iteration count                | M3+       | Stop early if value converges                                                    |
 | Parallel leaf evaluation                | M3+       | ThreadPoolExecutor for batch scoring                                             |
 
-### Implementation order
+### Historical implementation order
 
-1. Add `build_relevance_prompt()` and `build_synthesis_prompt()` to `pdf_json_prompt.py`
+1. Add `build_prior_scoring_prompt()`, `build_leaf_eval_prompt()`, and `build_synthesis_prompt()` to `pdf_json_prompt.py`
 2. Create `mcts_search.py` with `MCTSQuery` class
-3. Create `run_mcts_search.py` CLI entry point
-4. Test on Unilever FY22 with 3 queries covering different document areas
+3. Use `test_mcts_search.py` as the root-level smoke test entrypoint
+4. Test on Unilever FY22 with 2-3 queries covering different document areas
 5. Update README and architecture docs
 

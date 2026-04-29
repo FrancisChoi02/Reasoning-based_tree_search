@@ -1,10 +1,20 @@
 # Lessons Learned
 
-## 2026-04-17: Add a root-level MCTS search smoke test for document-tree querying
+## 2026-04-30: Batch leaf evaluation, not MCTS state mutation
+
+**Root cause**: It is tempting to parallelize MCTS by updating node visit/value statistics from multiple worker threads at the same time, but the current tree state lives directly on mutable `TreeNode` instances. That would make selection and backpropagation race-prone and hard to reason about.
+
+**Fix**: Keep frontier selection and score commits serialized, and only parallelize the independent LLM leaf evaluation calls through the shared `call_chat_completions_batch(...)` transport. Reserve leaves inside each batch so one frontier step does not evaluate the same leaf twice.
+
+**Prevention**: When adding concurrency to tree search, first isolate which phase is pure I/O and which phase mutates canonical search state. Only the pure I/O phase should run concurrently unless the state model is redesigned first.
+
+---
+
+## 2026-04-17: Keep a root-level MCTS search smoke test for document-tree querying
 
 **Root cause**: The repo had extraction verification and direct Azure chat transport verification, but no narrow root-level runner for the actual MCTS query path. That made search-layer debugging slower because tree traversal, scoring prompts, and synthesis could only be reasoned about indirectly.
 
-**Fix**: Add `test_mcts_search.py` at the repo root so document-tree MCTS search can be exercised directly with one question, one document, and explicit pass/fail checks.
+**Fix**: Keep `test_mcts_search.py` at the repo root so document-tree MCTS search can be exercised directly with one question, one document, and explicit pass/fail checks.
 
 **Prevention**: Whenever a new orchestration layer is introduced on top of shared transport utilities, add one root-level smoke test that validates the orchestration path directly before relying on larger end-to-end flows.
 

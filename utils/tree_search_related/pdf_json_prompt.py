@@ -247,3 +247,93 @@ def build_summary_prompt(node_text: str) -> str:
 Partial Document Text: {node_text}
 
 Directly return the description, do not include any other text."""
+
+
+# ---------------------------------------------------------------------------
+# MCTS Search Prompts
+# ---------------------------------------------------------------------------
+
+
+def build_prior_scoring_prompt(query: str, siblings: List[Dict[str, str]]) -> str:
+    items = "\n".join(
+        f'{index + 1}. {sibling["title"]} (pages {sibling["pages"]}, path: {sibling["path"]})'
+        for index, sibling in enumerate(siblings)
+    )
+    return f"""Your job is to estimate which document sections are likely relevant to the given question.
+
+Question: {query}
+
+Sections:
+{items}
+
+Scoring rubric:
+1.0 — Likely contains the direct answer
+0.8 — Likely contains significant relevant information
+0.5 — May contain useful context
+0.2 — Unlikely to be relevant
+0.0 — Definitely not relevant
+
+Reply as JSON array:
+[
+  {{"title": "<exact title>", "prior_score": <float>}},
+  ...
+]
+Directly return the JSON. Do not output anything else.""".strip()
+
+
+def build_leaf_eval_prompt(
+    query: str,
+    path: str,
+    title: str,
+    text_head: str,
+    text_tail: str,
+    summary: Optional[str] = None,
+) -> str:
+    summary_section = f"\nSection summary: {summary}" if summary else ""
+    tail_section = f"\n\nText (ending):\n{text_tail}" if text_tail else ""
+
+    return f"""Your job is to score how relevant a document section is to the given question.
+
+Question: {query}
+
+Section path: {path}
+Section title: {title}{summary_section}
+
+Text (beginning):
+{text_head}{tail_section}
+
+Scoring rubric — be strict:
+1.0 — Contains the direct, complete answer
+0.8 — Contains significant information that partially answers the question
+0.6 — Contains related information that provides useful context
+0.4 — Topically related but does not directly help answer the question
+0.2 — Only tangentially related
+0.0 — Completely unrelated
+
+Reply as JSON:
+{{"thinking": "<1-2 sentences explaining your reasoning>", "score": <float>}}
+Directly return the JSON. Do not output anything else.""".strip()
+
+
+def build_synthesis_prompt(query: str, sections: List[Dict[str, str]]) -> str:
+    parts = []
+    for index, section in enumerate(sections, start=1):
+        section_summary = f"\nSummary: {section['summary']}" if section.get("summary") else ""
+        parts.append(
+            f"--- Section {index}: {section['path']} (pages {section['pages']}) ---{section_summary}\n{section['text']}"
+        )
+    combined_sections = "\n\n".join(parts)
+
+    return f"""Answer the question based on the document sections below.
+If the sections do not contain enough information, say so.
+
+Question: {query}
+
+{combined_sections}
+
+Instructions:
+- Answer directly and concisely.
+- Cite page numbers in parentheses when referencing specific data, e.g. (page 159).
+- If multiple sections provide conflicting information, note the discrepancy.
+- Do not fabricate information not present in the sections.""".strip()
+

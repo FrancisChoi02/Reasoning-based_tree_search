@@ -1,6 +1,6 @@
 # Input: Query text, document identifier, SQLite DB path, and MCTS search configuration.
-# Output: Runs an MCTS-based document search smoke test and prints answer/source diagnostics with pass/fail checks.
-# Position: Root-level manual test runner for utils.tree_search_related.mcts_search. If modified, update this header and the parent folder's .md index.
+# Output: Runs a root-level MCTS document search smoke test and prints answer/source diagnostics with basic pass/fail checks.
+# Position: Root-level manual smoke test runner for utils.tree_search_related.mcts_search. If modified, update this header and the parent folder's .md index.
 
 import argparse
 import sys
@@ -10,6 +10,13 @@ from typing import Optional
 from utils.database.db_manager import get_document
 from utils.tree_search_related.mcts_search import MCTSQuery
 
+#  Run it from the repo root with:        
+                                 
+#   python test_mcts_search.py --db-path verify_test.db --doc-pk 1 --query "What was Unilever's revenue in 2022?" --iterations 10 --top-k 3
+#   --verbose                                        
+                                                                                                                                             
+#   Yes, the last failure looked like an external deployment/runtime issue, not a Python wiring issue.                                                                                                                                                      
+#   
 
 def _positive_int(value: str) -> int:
     parsed = int(value)
@@ -27,7 +34,7 @@ def _non_negative_float(value: str) -> float:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run an MCTS document search smoke test"
+        description="Run a root-level MCTS document search smoke test"
     )
     parser.add_argument(
         "--db-path",
@@ -64,7 +71,7 @@ def parse_args() -> argparse.Namespace:
         "--max-workers",
         type=_positive_int,
         default=4,
-        help="Maximum number of concurrent workers for batched scoring",
+        help="Maximum number of concurrent workers used for same-frontier leaf evaluation",
     )
     parser.add_argument(
         "--exploration-weight",
@@ -129,7 +136,7 @@ def main() -> int:
         verbose=args.verbose,
     )
 
-    print("=== MCTS Search Test ===")
+    print("=== MCTS Search Smoke Test ===")
     print(f"db_path: {args.db_path}")
     print(f"doc_pk: {doc_pk}")
     print(f"iterations: {args.iterations}")
@@ -187,10 +194,10 @@ def main() -> int:
         print("\n=== Errors ===")
         for error in errors:
             print(f"- {error}")
-        print("\n[FAIL] MCTS search test failed.")
+        print("\n[FAIL] MCTS search smoke test failed.")
         return 1
 
-    print("\n[PASS] MCTS search test passed.")
+    print("\n[PASS] MCTS search smoke test passed.")
     return 0
 
 

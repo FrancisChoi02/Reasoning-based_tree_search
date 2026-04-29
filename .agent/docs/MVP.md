@@ -51,16 +51,16 @@ Multi-pass TOC-driven extraction producing deep hierarchical trees.
 
 ---
 
-## Milestone 3: Tree Search (NEXT)
+## Milestone 3: Tree Search (IN PROGRESS)
 
 Use the hierarchical tree for reasoning-based search over document content.
 
 | Component | Status | Notes |
 |---|---|---|
-| MCTS node selection via UCB1 | Pending | `TreeNode.ucb1()`, `best_child_ucb1()` in tree_node.py |
-| Tree traversal + value backpropagation | Pending | |
-| LLM-based node evaluation at leaves | Pending | Score relevance of leaf content to a query |
-| Query → tree search → answer pipeline | Pending | End-to-end: question in, answer out |
+| MCTS node selection via UCB1 | Done | `TreeNode.ucb1()`, `best_child_ucb1()` in `tree_node.py`; used by `mcts_search.py` |
+| Tree traversal + value backpropagation | Done | Implemented in `utils/tree_search_related/mcts_search.py` |
+| LLM-based node evaluation at leaves | Done | Relevance scoring from path, summary, and head/tail text excerpts |
+| Query → tree search → answer pipeline | Done | `MCTSQuery.search(...)` + root-level `test_mcts_search.py` smoke test |
 | Multi-document search | Pending | Search across multiple PDF trees |
 
 ---
