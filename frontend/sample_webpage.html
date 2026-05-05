@@ -1,0 +1,454 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Financial Spreading SCT</title>
+    <!-- Tailwind CSS for rapid styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Flash animation for incoming data */
+        @keyframes flashHighlight {
+            0% { background-color: #fef08a; color: #166534; font-weight: bold;} /* yellow-200 */
+            100% { background-color: transparent; color: inherit; font-weight: normal;}
+        }
+        .flash-cell {
+            animation: flashHighlight 1.5s ease-out;
+        }
+
+        /* Tooltip styling */
+        .tooltip-container {
+            position: relative;
+            cursor: help;
+        }
+        .tooltip-container .tooltip {
+            visibility: hidden;
+            background-color: #f8fafc;
+            color: #334155;
+            text-align: left;
+            border: 1px solid #cbd5e1;
+            border-radius: 6px;
+            padding: 8px 12px;
+            position: absolute;
+            z-index: 50;
+            bottom: 125%;
+            left: 50%;
+            transform: translateX(-50%);
+            width: max-content;
+            max-width: 300px;
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
+            font-size: 0.75rem;
+            opacity: 0;
+            transition: opacity 0.3s;
+            pointer-events: none;
+        }
+        .tooltip-container:hover .tooltip {
+            visibility: visible;
+            opacity: 1;
+        }
+
+        /* Custom Scrollbar for table */
+        .table-scroll::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        .table-scroll::-webkit-scrollbar-track {
+            background: #f1f5f9; 
+        }
+        .table-scroll::-webkit-scrollbar-thumb {
+            background: #cbd5e1; 
+            border-radius: 4px;
+        }
+        .table-scroll::-webkit-scrollbar-thumb:hover {
+            background: #94a3b8; 
+        }
+
+        /* Sidebar transition */
+        #sidebar {
+            transition: width 0.3s ease, padding 0.3s ease, opacity 0.3s ease;
+            overflow: hidden;
+        }
+        .sidebar-closed {
+            width: 0 !important;
+            padding-left: 0 !important;
+            padding-right: 0 !important;
+            border: none !important;
+            opacity: 0;
+        }
+        
+        .row-selected {
+            background-color: #f1f5f9; /* Slate 100 */
+        }
+    </style>
+</head>
+<body class="bg-gray-50 h-screen flex text-sm text-gray-800 font-sans overflow-hidden">
+
+    <!-- Sidebar: History Panel -->
+    <aside id="sidebar" class="w-64 bg-white border-r border-gray-200 flex flex-col shadow-sm flex-shrink-0">
+        <div class="p-4 flex items-center justify-between border-b border-gray-200 bg-gray-100">
+            <h2 class="font-semibold text-gray-700 flex items-center gap-2">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                History
+            </h2>
+        </div>
+        <div class="p-4 flex-1 overflow-y-auto">
+            <ul id="history-list" class="space-y-2">
+                <!-- History items injected here -->
+                <li class="text-xs text-gray-400 italic" id="empty-history">No past analyses</li>
+            </ul>
+        </div>
+    </aside>
+
+    <!-- Main Content Area -->
+    <main class="flex-1 flex flex-col min-w-0">
+        <!-- Header -->
+        <header class="h-16 bg-white border-b border-gray-200 flex items-center justify-between px-6 shadow-sm z-10 flex-shrink-0">
+            <div class="flex items-center gap-4">
+                <button onclick="toggleSidebar()" class="p-2 hover:bg-gray-100 rounded-md text-gray-600 transition" title="Toggle History Panel">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"></path></svg>
+                </button>
+                <h1 class="text-xl font-bold text-gray-800 truncate">Financial Spreading SCT</h1>
+            </div>
+
+            <!-- Data Source Selection (State 1) -->
+            <div class="flex items-center gap-2">
+                <label for="data-source" class="font-semibold text-gray-700 whitespace-nowrap hidden sm:block">Data Source:</label>
+                <select id="data-source" class="font-bold bg-gray-100 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2 cursor-pointer outline-none max-w-[200px]">
+                    <option value="" disabled selected>Please select data source</option>
+                    <option value="Moody's">Moody's</option>
+                    <option value="S&P Global">S&P Global</option>
+                    <option value="Fitch">Fitch Ratings</option>
+                    <option value="Internal Model">Internal Model</option>
+                </select>
+            </div>
+        </header>
+
+        <!-- Table Container -->
+        <div class="flex-1 p-4 sm:p-6 overflow-hidden flex flex-col min-h-0">
+            <div class="flex-1 bg-white border border-gray-200 rounded-lg shadow-sm overflow-hidden flex flex-col">
+                <div class="overflow-auto flex-1 table-scroll">
+                    <table class="w-full text-left border-collapse min-w-[800px]">
+                        <thead class="bg-purple-100 sticky top-0 z-20 shadow-sm">
+                            <tr>
+                                <th class="p-3 border-b border-r border-gray-200 font-semibold w-40">SCT Section</th>
+                                <th class="p-3 border-b border-r border-gray-200 font-semibold w-64">Metric</th>
+                                <th class="p-3 border-b border-gray-200 font-semibold text-center w-24">FY21</th>
+                                <th class="p-3 border-b border-gray-200 font-semibold text-center w-24">FY22</th>
+                                <th class="p-3 border-b border-gray-200 font-semibold text-center w-24">FY23</th>
+                                <th class="p-3 border-b border-gray-200 font-semibold text-center w-24">FY24</th>
+                                <th class="p-3 border-b border-gray-200 font-semibold text-center w-24 border-r">FY25</th>
+                                <th class="p-3 border-b border-gray-200 font-semibold text-center w-20">Select</th>
+                            </tr>
+                        </thead>
+                        <tbody id="sct-body" class="divide-y divide-gray-200 cursor-pointer bg-white">
+                            <!-- Rows injected here by JS -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Footer area: Summary & Controls -->
+            <div class="mt-4 flex flex-col sm:flex-row items-center sm:items-end justify-between gap-4 min-h-[60px] flex-shrink-0">
+                <!-- Results Summary (Hidden initially) -->
+                <div id="results-summary" class="hidden bg-blue-50 text-blue-800 p-3 rounded border border-blue-200 text-xs flex flex-wrap gap-4 sm:gap-6 w-full sm:w-auto">
+                    <div><strong>Total Time:</strong> <span id="sum-time">--</span></div>
+                    <div><strong>Model:</strong> <span id="sum-model">--</span></div>
+                    <div><strong>Tokens:</strong> <span id="sum-tokens">--</span></div>
+                </div>
+                <div id="summary-placeholder" class="text-gray-400 text-xs italic text-center sm:text-left w-full sm:w-auto">
+                    Select indicators and data source to begin analysis.
+                </div>
+
+                <button id="btn-action" onclick="handleActionClick()" disabled class="w-full sm:w-auto px-6 py-2.5 bg-purple-600 text-white font-semibold rounded-lg shadow-md hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition duration-150 ease-in-out whitespace-nowrap">
+                    Run analysis
+                </button>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        // --- DATA DEFINITION ---
+        const indicators = [
+            { sec: 'Income Statement', met: 'Revenue' }, { sec: 'Income Statement', met: 'Gross Profit' },
+            { sec: 'Income Statement', met: 'Gross Profit Margin %' }, { sec: 'Income Statement', met: 'EBITDA' },
+            { sec: 'Income Statement', met: 'EBITDA Margin %' }, { sec: 'Income Statement', met: 'Operating Profit (Loss)' },
+            { sec: 'Income Statement', met: 'Operating Profit Margin %' }, { sec: 'Income Statement', met: 'Interest Expense (Net)' },
+            { sec: 'Income Statement', met: 'Net Profit' },
+            { sec: 'Balance Sheet', met: 'Net Worth' }, { sec: 'Balance Sheet', met: 'Tangible Net Worth' },
+            { sec: 'Balance Sheet', met: 'Total Ext. Funded Debt' }, { sec: 'Balance Sheet', met: 'Cash + Mkt Securities' },
+            { sec: 'Balance Sheet', met: 'Net Funded Debt' }, { sec: 'Balance Sheet', met: 'Working Capital Days' },
+            { sec: 'Balance Sheet', met: 'Change in Working Capital' },
+            { sec: 'Cash Flow', met: 'Operating cashflow' }, { sec: 'Cash Flow', met: 'Investing cashflow' },
+            { sec: 'Cash Flow', met: 'Financing cashflow' }, { sec: 'Cash Flow', met: 'w/w Dividends' },
+            { sec: 'Cash Flow', met: 'Free cashflow' },
+            { sec: 'Ratios', met: 'Ext. Gearing (TFD/TNW) (x)' }, { sec: 'Ratios', met: 'NFD / EBITDA (x)' },
+            { sec: 'Ratios', met: 'TFD/ EBITDA (x)' }, { sec: 'Ratios', met: 'NOCF / Interest (x)' },
+            { sec: 'Others', met: 'Capital Expenditure' }
+        ];
+        const years = ['FY21', 'FY22', 'FY23', 'FY24', 'FY25'];
+
+        // --- STATE VARIABLES ---
+        // states: 'SELECTION', 'ANALYSIS', 'RESULTS'
+        let currentState = 'SELECTION'; 
+        let selectedRows = new Set();
+        let startTime = 0;
+
+        // --- DOM ELEMENTS ---
+        const tbody = document.getElementById('sct-body');
+        const sourceSelect = document.getElementById('data-source');
+        const btnAction = document.getElementById('btn-action');
+        const summaryDiv = document.getElementById('results-summary');
+        const summaryPlaceholder = document.getElementById('summary-placeholder');
+        const historyList = document.getElementById('history-list');
+
+        // --- INITIALIZATION ---
+        function initTable() {
+            let currentSec = "";
+            indicators.forEach((ind, index) => {
+                const tr = document.createElement('tr');
+                tr.className = "hover:bg-gray-50 transition border-b border-gray-100";
+                tr.onclick = (e) => {
+                    // Prevent row click if clicking directly on a checkbox (to avoid double toggle)
+                    if(e.target.tagName !== 'INPUT' && currentState === 'SELECTION') {
+                        toggleRowSelection(index);
+                    }
+                };
+
+                // Determine if section label should be shown or merged visually
+                const displaySec = (ind.sec === currentSec) ? "" : ind.sec;
+                currentSec = ind.sec;
+
+                let html = `
+                    <td class="p-3 text-gray-500 border-r border-gray-100 align-top">${displaySec}</td>
+                    <td class="p-3 text-gray-800 font-medium border-r border-gray-100">${ind.met}</td>
+                `;
+
+                years.forEach(yr => {
+                    html += `
+                        <td class="p-2 border-r border-gray-100 text-center relative">
+                            <div id="cell-${index}-${yr}" class="w-full h-full min-h-[24px] flex items-center justify-center text-gray-700">
+                                <!-- Value injected here -->
+                            </div>
+                        </td>
+                    `;
+                });
+
+                html += `
+                    <td class="p-3 text-center">
+                        <input type="checkbox" id="chk-${index}" onchange="toggleRowSelection(${index}, true)" 
+                            class="w-4 h-4 text-purple-600 bg-gray-100 border-gray-300 rounded focus:ring-purple-500 cursor-pointer pointer-events-none">
+                    </td>
+                `;
+
+                tr.innerHTML = html;
+                tbody.appendChild(tr);
+            });
+
+            // Listeners
+            sourceSelect.addEventListener('change', updateButtonState);
+        }
+
+        // --- LOGIC: SELECTION STATE ---
+        function toggleRowSelection(index, fromCheckbox = false) {
+            if (currentState !== 'SELECTION') return;
+            
+            const tr = tbody.children[index];
+            const chk = document.getElementById(`chk-${index}`);
+            
+            if (selectedRows.has(index)) {
+                selectedRows.delete(index);
+                chk.checked = false;
+                tr.classList.remove('row-selected');
+            } else {
+                selectedRows.add(index);
+                chk.checked = true;
+                tr.classList.add('row-selected');
+            }
+            updateButtonState();
+        }
+
+        function updateButtonState() {
+            if (currentState !== 'SELECTION') return;
+            const hasSource = sourceSelect.value !== "";
+            const hasValidCount = selectedRows.size > 1;
+
+            if (hasSource && hasValidCount) {
+                btnAction.disabled = false;
+                summaryPlaceholder.innerText = "Ready to run analysis.";
+            } else {
+                btnAction.disabled = true;
+                if (!hasSource) summaryPlaceholder.innerText = "Please select a data source to begin.";
+                else summaryPlaceholder.innerText = `Select at least 2 indicators (${selectedRows.size} selected).`;
+            }
+        }
+
+        // --- LOGIC: STATE TRANSITIONS ---
+        function handleActionClick() {
+            if (currentState === 'SELECTION') startAnalysis();
+            else if (currentState === 'RESULTS') resetToSelection();
+        }
+
+        function startAnalysis() {
+            currentState = 'ANALYSIS';
+            startTime = Date.now();
+            
+            // UI Updates
+            btnAction.disabled = true;
+            btnAction.innerText = "Analyzing...";
+            btnAction.classList.remove('bg-purple-600', 'hover:bg-purple-700');
+            btnAction.classList.add('bg-gray-400');
+            sourceSelect.disabled = true;
+            summaryPlaceholder.innerText = "Analysis in progress. Please wait...";
+
+            // Gather all cells that need calculation
+            let queue = [];
+            selectedRows.forEach(rowIndex => {
+                years.forEach(yr => {
+                    queue.push({ r: rowIndex, c: yr });
+                });
+            });
+
+            // Shuffle queue to simulate asynchronous parallel network requests arriving randomly
+            queue = queue.sort(() => Math.random() - 0.5);
+
+            simulateApiCalls(queue, 0);
+        }
+
+        function simulateApiCalls(queue, currentIndex) {
+            if (currentIndex >= queue.length) {
+                finishAnalysis();
+                return;
+            }
+
+            const item = queue[currentIndex];
+            const cellDiv = document.getElementById(`cell-${item.r}-${item.c}`);
+            const metricName = indicators[item.r].met;
+            
+            // Random delay between 50ms and 300ms
+            setTimeout(() => {
+                // Remove previous flash to allow re-trigger
+                cellDiv.classList.remove('flash-cell');
+                void cellDiv.offsetWidth; // trigger reflow
+                
+                // 15% chance to fail (warning), 85% to succeed
+                const isSuccess = Math.random() > 0.15;
+                
+                if (isSuccess) {
+                    // Generate random mock financial value
+                    const val = (Math.random() * 10000 + 1000).toLocaleString('en-US', {maximumFractionDigits: 0});
+                    const sourceName = sourceSelect.value;
+                    
+                    cellDiv.innerHTML = `
+                        <div class="tooltip-container w-full h-full text-center flex items-center justify-center">
+                            ${val}
+                            <div class="tooltip">
+                                <p><strong>Audit Trail</strong></p>
+                                <p class="mt-1">Calculated by: Internal Processing Engine</p>
+                                <p>Data Sourced from: <strong>${sourceName}</strong></p>
+                                <hr class="my-1 border-gray-300">
+                                <p>Formula: [${metricName}] = <em>Component_A * Factor_B</em></p>
+                            </div>
+                        </div>
+                    `;
+                } else {
+                    // Fail state: Yellow Warning Marker
+                    cellDiv.innerHTML = `
+                        <div class="tooltip-container text-yellow-500 w-full h-full flex items-center justify-center">
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
+                            <div class="tooltip text-red-600 bg-red-50 border-red-200">
+                                Data gap or missing component prevented inclusion.
+                            </div>
+                        </div>
+                    `;
+                    // Color the parent td slightly yellow
+                    cellDiv.parentElement.classList.add('bg-yellow-50');
+                }
+
+                cellDiv.classList.add('flash-cell');
+
+                // Process next item
+                simulateApiCalls(queue, currentIndex + 1);
+            }, Math.random() * 200 + 20); // Faster simulation for demo purposes
+        }
+
+        function finishAnalysis() {
+            currentState = 'RESULTS';
+            const durationSec = ((Date.now() - startTime) / 1000).toFixed(1);
+            
+            // Calculate tokens (mock logic based on selected size)
+            const mockTokens = (selectedRows.size * 5 * Math.floor(Math.random() * 20 + 30)).toLocaleString();
+
+            // UI Updates: Footer
+            document.getElementById('sum-time').innerText = `${durationSec}s`;
+            document.getElementById('sum-model').innerText = "Gemini 3.1 Pro (Web)";
+            document.getElementById('sum-tokens').innerText = mockTokens;
+            
+            summaryPlaceholder.classList.add('hidden');
+            summaryDiv.classList.remove('hidden');
+
+            // UI Updates: Button
+            btnAction.disabled = false;
+            btnAction.innerText = "Next analysis";
+            btnAction.classList.remove('bg-gray-400');
+            btnAction.classList.add('bg-blue-600', 'hover:bg-blue-700');
+
+            // Add History Record
+            const now = new Date();
+            const ts = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')} ${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
+            const historyTitle = `${sourceSelect.value} - ${ts}`;
+            
+            document.getElementById('empty-history')?.remove();
+            
+            const li = document.createElement('li');
+            li.className = "text-sm p-2 rounded hover:bg-gray-200 cursor-pointer text-gray-700 truncate border border-transparent hover:border-gray-300 transition";
+            li.innerText = historyTitle;
+            li.title = `Analyzed ${selectedRows.size} indicators`;
+            historyList.prepend(li);
+        }
+
+        function resetToSelection() {
+            currentState = 'SELECTION';
+            
+            // Clear cells
+            selectedRows.forEach(rowIndex => {
+                years.forEach(yr => {
+                    const cellDiv = document.getElementById(`cell-${rowIndex}-${yr}`);
+                    cellDiv.innerHTML = '';
+                    cellDiv.classList.remove('flash-cell');
+                    cellDiv.parentElement.classList.remove('bg-yellow-50');
+                });
+                
+                // Uncheck and reset row UI
+                const tr = tbody.children[rowIndex];
+                const chk = document.getElementById(`chk-${rowIndex}`);
+                chk.checked = false;
+                tr.classList.remove('row-selected');
+            });
+
+            selectedRows.clear();
+            
+            // Reset UI components
+            sourceSelect.value = "";
+            sourceSelect.disabled = false;
+            
+            summaryDiv.classList.add('hidden');
+            summaryPlaceholder.classList.remove('hidden');
+            
+            btnAction.innerText = "Run analysis";
+            btnAction.classList.remove('bg-blue-600', 'hover:bg-blue-700');
+            btnAction.classList.add('bg-purple-600', 'hover:bg-purple-700');
+            
+            updateButtonState();
+        }
+
+        // --- UTILS ---
+        function toggleSidebar() {
+            const sidebar = document.getElementById('sidebar');
+            sidebar.classList.toggle('sidebar-closed');
+        }
+
+        // Boot
+        initTable();
+    </script>
+</body>
+</html>
