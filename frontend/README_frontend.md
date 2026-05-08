@@ -1,8 +1,8 @@
 # frontend/ — Financial Spreading SCT Web UI
 
-**Input:** `sample_webpage.html` (self-contained HTML + Tailwind CSS CDN + vanilla JS)  
-**Output:** Interactive single-page financial scorecard with selection/analysis/results states  
-**Position:** Presentation layer — decoupled from the Python extraction pipeline. Delivers the SCT (Score Table) UI for indicator selection, mock analysis playback, and audit-trail inspection.
+**Input:** `sample_webpage.html` (self-contained HTML + Tailwind CSS CDN + vanilla JS), GET `/api/companies` (company dropdown), POST `/api/spread` SSE stream, GET `/api/history` (sidebar)
+**Output:** Interactive single-page financial scorecard with company dropdown (populated from DB), real-time cell updates via SSE, audit-trail tooltips, and clickable history restoration
+**Position:** Presentation layer — consumes backend SSE stream for live metric resolution. Company selection is now a dropdown fed by GET /api/companies. No mock data path in production.
 
 If modified, update this header and `.agent/docs/FRONTEND_INTERACTION_DESIGN.md`.
 
@@ -12,7 +12,7 @@ If modified, update this header and `.agent/docs/FRONTEND_INTERACTION_DESIGN.md`
 
 | File | Purpose |
 |---|---|
-| `sample_webpage.html` | Single-file web app: 3-state SCT UI, mock async cell population, history sidebar |
+| `sample_webpage.html` | Single-file web app: 3-state SCT UI, SSE stream consumption, history sidebar |
 
 ## Architecture
 
@@ -21,12 +21,12 @@ If modified, update this header and `.agent/docs/FRONTEND_INTERACTION_DESIGN.md`
 │  History list (Data Source – Timestamp)             │
 └─────────────────────────────────────────────────────┘
 ┌─ Header ────────────────────────────────────────────┐
-│  [☰] Financial Spreading SCT    [Data Source: ▾]    │
+│  [☰] Financial Spreading SCT  [Company: ▾] [Source: ▾] │
 └─────────────────────────────────────────────────────┘
 ┌─ Table (scrollable) ────────────────────────────────┐
-│  SCT Section | Metric | FY21..FY25 | Select         │
-│  Income Stmt | Revenue| (values)   | [x]            │
-│  ...          | ...    | ...        | ...            │
+│  SCT Section | Metric | FY21..FY25 | YoY | Select   │
+│  Income Stmt | Revenue| (live SSE)| ... | [x]        │
+│  ...          | ...    | ...        | ... | ...       │
 └─────────────────────────────────────────────────────┘
 ┌─ Footer ────────────────────────────────────────────┐
 │  [Summary: time/model/tokens]     [Run/Next button] │
@@ -36,47 +36,42 @@ If modified, update this header and `.agent/docs/FRONTEND_INTERACTION_DESIGN.md`
 ## State Machine
 
 ```
-SELECTION ──[Run analysis]──► ANALYSIS ──[all cells done]──► RESULTS
-    ▲                                                          │
-    └──────────────────[Next analysis]─────────────────────────┘
+SELECTION ──[Run analysis]──► ANALYSIS ──[SSE stream ends]──► RESULTS
+    ▲                                                              │
+    └──────────────────[Next analysis]─────────────────────────────┘
 ```
 
 ### SELECTION
 - Table rows are clickable to toggle checkbox + highlight.
-- Data source dropdown must be selected.
-- "Run analysis" disabled until: (a) source selected, (b) >= 2 rows checked.
+- Company name (text input) and data source (dropdown) must be set.
+- "Run analysis" disabled until: (a) company name entered, (b) source selected, (c) >= 2 rows checked.
 
 ### ANALYSIS
-- All inputs frozen (dropdown, checkboxes, button disabled).
-- Cells populate one-by-one with random delay (50-300 ms), simulating async API responses.
-- Each cell briefly flashes yellow-green on arrival.
-- 85% success (value + tooltip) / 15% failure (yellow ⚠ marker).
+- All inputs frozen (company, source dropdown, checkboxes disabled).
+- Backend streams SSE events; each resolved metric updates its cell immediately with flash animation.
+- Unresolved metrics show yellow warning marker with error detail in tooltip.
+- Tree verification results appear in the status text.
 
 ### RESULTS
-- Footer shows total time, model name, token count.
+- Footer shows total time, model name.
 - History sidebar gets a new entry: `{Source} - {YYYY-MM-DD HH:MM}`.
-- Button becomes "Next analysis" → resets to SELECTION.
+- Button becomes "Next analysis" -> resets to SELECTION.
 
-## Key Implementation Details
+## SSE Protocol (from backend)
 
-- **Indicators (26):** Hardcoded in `indicators[]` array covering Income Statement, Balance Sheet, Cash Flow, Ratios, Others.
-- **Years (5):** FY21, FY22, FY23, FY24, FY25.
-- **Data sources (4):** Moody's, S&P Global, Fitch, Internal Model.
-- **Mock API:** `simulateApiCalls()` uses recursive `setTimeout` to serialize cell updates. Queue is shuffled for visual randomness.
-- **Flash animation:** CSS `@keyframes flashHighlight` — yellow-200 bg → transparent over 1.5s.
-- **Tooltip:** CSS-only `.tooltip-container` hover reveals audit trail (formula, source, component breakdown).
-- **Sidebar toggle:** `toggleSidebar()` adds/removes `sidebar-closed` class (width 0, opacity 0, 0.3s transition).
-- **Row selection:** `row-selected` class (slate-100 bg). Checkboxes have `pointer-events-none` to avoid double-toggle.
+```
+event: tree_verification  {"event":"tree_verification","results":{"FY21":{...},"FY22":{...},...}}
+event: metric             {"canonical_name":"Revenue","year":"FY22","row_index":0,"value":12345,"status":"resolved","formula":null,"error":null}
+event: year_error         {"event":"year_error","year":"FY23","message":"Tree not available"}
+event: complete           {"event":"complete"}
+```
 
 ## Dependencies
 
 | Dependency | Role |
 |---|---|
 | Tailwind CSS (CDN) | Utility-first styling |
+| Backend API (`/api/spread`) | SSE stream of resolved metrics |
 | (none else) | No JS frameworks, no build step |
 
-## Future Integration Points
-
-- Replace `simulateApiCalls()` with real `fetch()` / SSE to a Python backend endpoint.
-- Replace `indicators[]` with an API-fetched schema.
-- Persist history in `localStorage` or backend session.
+If folder contents change, update this index.

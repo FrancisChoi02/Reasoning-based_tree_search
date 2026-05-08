@@ -10,3 +10,5 @@ pymupdf==1.26.4
 PyPDF2==3.0.1
 tiktoken==0.11.0
 pyyaml==6.0.2
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0

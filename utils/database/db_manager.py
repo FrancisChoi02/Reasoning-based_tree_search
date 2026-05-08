@@ -16,6 +16,8 @@ CREATE TABLE IF NOT EXISTS documents (
   doc_pk            INTEGER PRIMARY KEY,
   doc_name          TEXT NOT NULL UNIQUE,
   doc_description   TEXT,
+  company           TEXT,
+  year_period       TEXT,
   raw_json          TEXT NOT NULL CHECK (json_valid(raw_json)),
   checksum          TEXT,
   created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
@@ -70,14 +72,38 @@ CREATE INDEX IF NOT EXISTS idx_chunks_node
 
 CREATE INDEX IF NOT EXISTS idx_chunks_doc_pages
   ON node_chunks(doc_pk, page_start, page_end);
+
+CREATE TABLE IF NOT EXISTS workflows (
+  workflow_id       INTEGER PRIMARY KEY AUTOINCREMENT,
+  company_name      TEXT NOT NULL,
+  data_source       TEXT NOT NULL,
+  year_periods      TEXT NOT NULL CHECK (json_valid(year_periods)),
+  sct_data          TEXT NOT NULL CHECK (json_valid(sct_data)),
+  metric_count      INTEGER NOT NULL DEFAULT 0,
+  created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_workflows_company
+  ON workflows(company_name, created_at DESC);
 """
 
 
-def init_db(db_path: str = "tree_poc.db") -> sqlite3.Connection:
+def init_db(db_path: str = "static/tree_poc.db") -> sqlite3.Connection:
     """Create database tables and indexes if they do not exist."""
     conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(_SCHEMA_SQL)
+
+    # Migration: add columns that may not exist in older databases
+    for col, col_def in [
+        ("company", "TEXT"),
+        ("year_period", "TEXT"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE documents ADD COLUMN {col} {col_def}")
+        except sqlite3.OperationalError:
+            pass  # column already exists
+
     conn.commit()
     return conn
 
@@ -138,8 +164,11 @@ def _insert_nodes_recursive(
 
 def load_json_to_db(
     source: Union[str, Path, Dict[str, Any]],
-    db_path: str = "tree_poc.db",
+    db_path: str = "static/tree_poc.db",
     verbose: bool = True,
+    *,
+    company: str | None = None,
+    year_period: str | None = None,
 ) -> Dict[str, Any]:
     """
     Load a JSON source (file path or dict) into the database.
@@ -183,9 +212,9 @@ def load_json_to_db(
         cursor.execute("DELETE FROM documents WHERE doc_name = ?", (doc_name,))
 
         cursor.execute(
-            """INSERT INTO documents (doc_name, doc_description, raw_json, checksum)
-               VALUES (?, ?, ?, ?)""",
-            (doc_name, doc_description, raw_text, checksum),
+            """INSERT INTO documents (doc_name, doc_description, company, year_period, raw_json, checksum)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (doc_name, doc_description, company, year_period, raw_text, checksum),
         )
         doc_pk = cursor.lastrowid
 
@@ -216,7 +245,7 @@ def load_json_to_db(
         conn.close()
 
 
-def list_documents(db_path: str = "tree_poc.db") -> List[Dict[str, Any]]:
+def list_documents(db_path: str = "static/tree_poc.db") -> List[Dict[str, Any]]:
     """Return all documents with their node counts."""
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
@@ -234,9 +263,21 @@ def list_documents(db_path: str = "tree_poc.db") -> List[Dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
+def list_companies(db_path: str = "static/tree_poc.db") -> list[str]:
+    """Return distinct company names that have document trees in the DB."""
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT DISTINCT company FROM documents WHERE company IS NOT NULL AND company != '' ORDER BY company"
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return [row[0] for row in rows]
+
+
 def get_document(
     identifier: Union[int, str],
-    db_path: str = "tree_poc.db",
+    db_path: str = "static/tree_poc.db",
 ) -> Dict[str, Any]:
     """Look up a document by doc_pk (int) or doc_name (str)."""
     conn = sqlite3.connect(db_path)
@@ -254,6 +295,116 @@ def get_document(
     if row is None:
         raise ValueError(f"Document not found: {identifier}")
     return dict(row)
+
+
+def get_doc_by_company_year(
+    company: str,
+    year_period: str,
+    db_path: str = "static/tree_poc.db",
+) -> Dict[str, Any]:
+    """Look up a document by company and year_period. Returns the newest match."""
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute(
+        """SELECT * FROM documents
+           WHERE company = ? AND year_period = ?
+           ORDER BY created_at DESC LIMIT 1""",
+        (company, year_period),
+    )
+    row = cursor.fetchone()
+    conn.close()
+
+    if row is None:
+        raise ValueError(
+            f"Document not found for company={company!r}, year_period={year_period!r}"
+        )
+    return dict(row)
+
+
+# ---------------------------------------------------------------------------
+# Workflow history CRUD
+# ---------------------------------------------------------------------------
+
+def save_workflow(
+    company_name: str,
+    data_source: str,
+    year_periods: list[str],
+    sct_data: dict[str, Any],
+    db_path: str = "static/tree_poc.db",
+) -> int:
+    """Persist a completed spread workflow and return its workflow_id."""
+    conn = init_db(db_path)
+    cursor = conn.cursor()
+    metric_count = sum(
+        len(metrics) for metrics in sct_data.values() if isinstance(metrics, list)
+    )
+    cursor.execute(
+        """INSERT INTO workflows (company_name, data_source, year_periods, sct_data, metric_count)
+           VALUES (?, ?, ?, ?, ?)""",
+        (
+            company_name,
+            data_source,
+            json.dumps(year_periods, ensure_ascii=False),
+            json.dumps(sct_data, ensure_ascii=False),
+            metric_count,
+        ),
+    )
+    conn.commit()
+    workflow_id = cursor.lastrowid
+    conn.close()
+    return workflow_id
+
+
+def list_workflows(
+    company_name: str | None = None,
+    db_path: str = "static/tree_poc.db",
+) -> list[dict[str, Any]]:
+    """Return all workflows, optionally filtered by company, newest first."""
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    if company_name:
+        cursor.execute(
+            """SELECT workflow_id, company_name, data_source, year_periods, metric_count, created_at
+               FROM workflows WHERE company_name = ? ORDER BY created_at DESC""",
+            (company_name,),
+        )
+    else:
+        cursor.execute(
+            """SELECT workflow_id, company_name, data_source, year_periods, metric_count, created_at
+               FROM workflows ORDER BY created_at DESC""",
+        )
+    rows = cursor.fetchall()
+    conn.close()
+    results: list[dict[str, Any]] = []
+    for row in rows:
+        record = dict(row)
+        record["year_periods"] = json.loads(record["year_periods"])
+        results.append(record)
+    return results
+
+
+def get_workflow(
+    workflow_id: int,
+    db_path: str = "static/tree_poc.db",
+) -> dict[str, Any]:
+    """Return a single workflow with its full SCT data."""
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT * FROM workflows WHERE workflow_id = ?",
+        (workflow_id,),
+    )
+    row = cursor.fetchone()
+    conn.close()
+    if row is None:
+        raise ValueError(f"Workflow not found: {workflow_id}")
+    record = dict(row)
+    record["year_periods"] = json.loads(record["year_periods"])
+    record["sct_data"] = json.loads(record["sct_data"])
+    return record
 
 
 if __name__ == "__main__":

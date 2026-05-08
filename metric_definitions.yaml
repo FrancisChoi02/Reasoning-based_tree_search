@@ -1,0 +1,982 @@
+# Input: Processed_financials_sample.xlsx, SCT_Table_missing_items.xlsx,
+#   SCT_Table_missing_aggregation_items.xlsx,
+#   SCT_Table_missing_items(with_aggregation_and_formulas).xlsx
+# Output: Single source of truth for all metric definitions used in financial spreading
+# Position: Root config — loaded by FinancialSpreadingWorkflow to drive resolution order,
+#   MCTS search synonyms, formula evaluation, and SCT table assembly
+
+classification:
+  absolute_always_material:
+    - Revenue
+    - Total Ext. Funded Debt
+    - Capital Expenditure
+  materiality_not_applicable:
+    - Cost of Sales
+    - Depreciation
+    - Amortization
+    - All Operating Costs
+    - Net Intangible Assets
+    - Receivables
+    - Payables
+    - Inventory
+    - Short Term Debt
+    - Long Term Debt
+    - Equity
+    - Reserves
+    - Interest Paid
+    - Interest Received
+    - Income from Investments
+    - Loss from Investments
+    - Bank charges
+    - Write-off of financial assets
+    - Taxation
+    - Extraordinary items
+    - Change in trade and other receivables
+    - Change in inventory
+    - Change in trade and other payables
+
+alias_map:
+  Turnover: Revenue
+  Operating Revenue: Revenue
+  Sales: Revenue
+  Net Sales: Revenue
+  Total Revenue: Revenue
+  Dividends: w/w Dividends
+  Cash: Cash + Mkt Securities
+  Marketable Securities: Cash + Mkt Securities
+  COGS: Cost of Sales
+  Cost of Goods Sold: Cost of Sales
+  Cost of Revenue: Cost of Sales
+  EBIT: Operating Profit
+  Profit from Operations: Operating Profit
+  Operating Income: Operating Profit
+  PBT: Profit before Taxes
+  Pre-tax Profit: Profit before Taxes
+  Earnings before Tax: Profit before Taxes
+  Capex: Capital Expenditure
+  Purchase of PPE: Capital Expenditure
+  Net Income: Net Profit
+  Bottom Line: Net Profit
+
+# ===========================================================================
+# Aggregation definitions — how to roll up sub-items into balance-sheet totals
+# ===========================================================================
+aggregations:
+  Equity:
+    statement_type: Balance Sheet
+    sct_section: Balance Sheet
+    calculation: sum
+    is_mentioned: false
+    synonyms:
+      - Total Equity
+      - Shareholders Equity
+      - Total Shareholders Equity
+      - Equity Attributable to Owners
+    components:
+      - metric: Ordinary Shares
+        sign: +1
+        synonyms:
+          - Ordinary Share Capital
+          - Equity Share Capital
+          - Common Stock
+          - Share Capital
+      - metric: Preference Shares
+        sign: +1
+        synonyms:
+          - Preference Share Capital
+          - Preferred Stock
+
+  Reserves:
+    statement_type: Balance Sheet
+    sct_section: Balance Sheet
+    calculation: sum
+    is_mentioned: false
+    synonyms:
+      - Total Reserves
+      - Retained Earnings and Reserves
+      - Other Equity
+    components:
+      - metric: Share Premium Account
+        sign: +1
+        synonyms:
+          - Share Premium
+          - Securities Premium
+          - Additional Paid-in Capital
+          - Capital Reserve
+      - metric: Retained Earnings
+        sign: +1
+        synonyms:
+          - Retained Earnings
+          - Retained Profits
+          - Accumulated Profits
+          - Revenue Reserves
+      - metric: Revaluation Reserves
+        sign: +1
+        synonyms:
+          - Revaluation Reserve
+          - Asset Revaluation Reserve
+      - metric: Other Reserves
+        sign: +1
+        synonyms:
+          - Other Reserves
+          - General Reserve
+          - Capital Reserve
+          - Special Reserves
+      - metric: Capital Redemption Reserve
+        sign: +1
+        synonyms:
+          - Capital Redemption Reserve
+          - CRR
+      - metric: Treasury Stock
+        sign: -1
+        synonyms:
+          - Treasury Stock
+          - Own Shares
+          - Shares Bought Back
+
+  Short Term Debt:
+    statement_type: Balance Sheet
+    sct_section: Current Liabilities
+    calculation: sum
+    is_mentioned: false
+    synonyms:
+      - Short Term Debt
+      - Current Debt
+      - Short-term Borrowings
+      - Current Borrowings
+      - Short-term bank loan
+      - Short-term bank loans
+    components:
+      - metric: Overdrafts
+        sign: +1
+        synonyms:
+          - Bank Overdraft
+          - Cash Credit
+          - Overdraft Facility
+      - metric: Trade Finance
+        sign: +1
+        synonyms:
+          - Trade Finance
+          - Bill Discounting
+          - Letter of Credit
+          - Export Packing Credit
+      - metric: Loans < 1 year - Secured
+        sign: +1
+        synonyms:
+          - Secured Short-term Loans
+          - Current Secured Borrowings
+          - Working Capital Loans (Secured)
+      - metric: Loans < 1 year - Unsecured
+        sign: +1
+        synonyms:
+          - Unsecured Short-term Loans
+          - Current Unsecured Borrowings
+          - Unsecured Loans from Banks
+          - Short-term loans
+          - Short-term borrowings
+      - metric: Current Portion - HP/Leasing/Other
+        sign: +1
+        synonyms:
+          - Current Portion of Lease Liabilities
+          - Current lease liabilities
+          - Lease Obligations due within 1 year
+      - metric: Current Portion - Long Term Debt
+        sign: +1
+        synonyms:
+          - Current Maturities of Long Term Debt
+          - Current Portion of Term Loans
+          - Long Term Debt due within 1 year
+          - Current portion of long-term debt
+      - metric: Current Portion - Sub Debt
+        sign: +1
+        synonyms:
+          - Current Portion of Subordinated Debt
+
+  Long Term Debt:
+    statement_type: Balance Sheet
+    sct_section: Non-Current Liabilities
+    calculation: sum
+    is_mentioned: false
+    synonyms:
+      - Long Term Debt
+      - Non-current Debt
+      - Non-current Borrowings
+      - Long-term borrowings
+      - Long-term bank loan
+    components:
+      - metric: Loans > 1 year - Secured
+        sign: +1
+        synonyms:
+          - Secured Long-term Loans
+          - Non-current Secured Borrowings
+          - Term Loans (Secured)
+          - Long-term bank loan (secured)
+      - metric: Loans > 1 year - Unsecured
+        sign: +1
+        synonyms:
+          - Unsecured Long-term Loans
+          - Non-current Unsecured Borrowings
+          - Debentures
+          - Bonds
+          - Notes
+          - Long-term bank loan
+      - metric: HP/Leasing/Other > 1 year
+        sign: +1
+        synonyms:
+          - Non-current Lease Liabilities
+          - Lease Obligations due after 1 year
+          - Non-current portion of lease liabilities
+      - metric: Subordinated Debt
+        sign: +1
+        synonyms:
+          - Subordinated Debt
+          - Subordinated Loans
+          - Mezzanine Debt
+
+# ===========================================================================
+# Metric definitions — every metric used in financial spreading
+# ===========================================================================
+metrics:
+
+  # ---------------------------------------------------------------------------
+  # INCOME STATEMENT — main SCT metrics (is_mentioned: true)
+  # ---------------------------------------------------------------------------
+
+  - canonical_name: Revenue
+    input_type: direct
+    metric_type: absolute
+    statement_type: Income Statement
+    is_mentioned: true
+    is_always_material: true
+    synonyms:
+      - Revenue
+      - Turnover
+      - Sales
+      - Net Sales
+      - Total Revenue
+      - Operating Revenue
+      - Sales Revenue
+      - Gross Sales
+      - Income from operations
+
+  - canonical_name: Cost of Sales
+    input_type: direct
+    metric_type: absolute
+    statement_type: Income Statement
+    is_mentioned: false
+    synonyms:
+      - Cost of Goods Sold
+      - COGS
+      - Cost of Sales
+      - Cost of Revenue
+      - Direct Costs
+      - Cost of Materials Consumed
+      - Purchase of Stock-in-Trade
+
+  - canonical_name: Gross Profit
+    input_type: derived_else_direct
+    metric_type: absolute
+    statement_type: Income Statement
+    is_mentioned: true
+    component_metrics:
+      - Revenue
+      - Cost of Sales
+    formula_note: Revenue - Cost of Sales
+    derivation_code:
+      formula: Revenue - Cost of Sales
+      components:
+        - Revenue
+        - Cost of Sales
+
+  - canonical_name: Gross Profit Margin %
+    input_type: derived_else_direct
+    metric_type: margin
+    statement_type: Income Statement
+    is_mentioned: true
+    component_metrics:
+      - Gross Profit
+      - Revenue
+    formula_note: (Gross Profit / Revenue) * 100
+    derivation_code:
+      formula: (Gross Profit / Revenue) * 100
+      components:
+        - Gross Profit
+        - Revenue
+
+  - canonical_name: Profit before Taxes
+    input_type: direct
+    metric_type: absolute
+    statement_type: Income Statement
+    is_mentioned: false
+    synonyms:
+      - Profit before Tax
+      - PBT
+      - Earnings before Tax
+      - Pre-tax Profit
+      - Net Profit before Taxation
+      - Profit (Loss) before Taxation
+
+  - canonical_name: Interest Expense (Net)
+    input_type: derived_else_direct
+    metric_type: absolute
+    statement_type: Income Statement
+    is_mentioned: true
+    component_metrics:
+      - Interest Paid
+      - Interest Received
+    formula_note: Interest Paid - Interest Received
+    derivation_code:
+      formula: Interest Paid - Interest Received
+      components:
+        - Interest Paid
+        - Interest Received
+    synonyms:
+      - Interest Expense
+      - Net Interest Expense
+      - Finance Costs (Net)
+      - Financial Expenses (Net)
+
+  - canonical_name: Interest Paid
+    input_type: direct
+    metric_type: absolute
+    statement_type: Income Statement
+    is_mentioned: false
+    synonyms:
+      - Interest Paid
+      - Interest on Loans
+      - Interest expense on bonds
+      - Interest expense on bank loans
+      - Interest expense on borrowings
+      - Finance costs
+      - Financial expenses
+
+  - canonical_name: Interest Received
+    input_type: direct
+    metric_type: absolute
+    statement_type: Income Statement
+    is_mentioned: false
+    synonyms:
+      - Interest Income
+      - Income from investments
+      - Interest on Bank Deposits
+      - Finance income
+      - Financial income
+      - Interest received
+      - Deposit interest income
+      - Interest and similar income
+
+  - canonical_name: Depreciation
+    input_type: direct
+    metric_type: absolute
+    statement_type: Income Statement
+    is_mentioned: false
+    synonyms:
+      - Depreciation
+      - Depreciation and Amortisation
+      - Depreciation on Property Plant and Equipment
+      - Total depreciation and amortisation
+
+  - canonical_name: Amortization
+    input_type: direct
+    metric_type: absolute
+    statement_type: Income Statement
+    is_mentioned: false
+    synonyms:
+      - Amortisation
+      - Amortization of Intangibles
+      - Amortization of Goodwill
+      - Total depreciation and amortisation expense
+
+  - canonical_name: EBITDA
+    input_type: derived_else_direct
+    metric_type: absolute
+    statement_type: Income Statement
+    is_mentioned: true
+    component_metrics:
+      - Profit before Taxes
+      - Interest Expense (Net)
+      - Depreciation
+      - Amortization
+    formula_note: Profit before Taxes + Interest Expense (Net) + Depreciation + Amortization
+    derivation_code:
+      formula: Profit before Taxes + Interest Expense (Net) + Depreciation + Amortization
+      components:
+        - Profit before Taxes
+        - Interest Expense (Net)
+        - Depreciation
+        - Amortization
+
+  - canonical_name: EBITDA Margin %
+    input_type: derived_else_direct
+    metric_type: margin
+    statement_type: Income Statement
+    is_mentioned: true
+    component_metrics:
+      - EBITDA
+      - Revenue
+    formula_note: (EBITDA / Revenue) * 100
+    derivation_code:
+      formula: (EBITDA / Revenue) * 100
+      components:
+        - EBITDA
+        - Revenue
+
+  - canonical_name: other Operating income
+    input_type: direct
+    metric_type: absolute
+    statement_type: Income Statement
+    is_mentioned: false
+    synonyms:
+      - Other Operating Income
+      - Other Income
+      - Miscellaneous Income
+      - Ancillary Revenue
+      - Export Incentives
+      - Subsidies
+
+  - canonical_name: all Operating costs
+    input_type: direct
+    metric_type: absolute
+    statement_type: Income Statement
+    is_mentioned: false
+    synonyms:
+      - Total Operating Expenses
+      - Total Expenses
+      - Operating Costs
+      - total operating costs
+
+  - canonical_name: Operating Profit
+    input_type: derived_else_direct
+    metric_type: absolute
+    statement_type: Income Statement
+    is_mentioned: true
+    component_metrics:
+      - Gross Profit
+      - other Operating income
+      - all Operating costs
+      - Depreciation
+      - Amortization
+    formula_note: Gross Profit + other Operating income - all Operating costs - Depreciation - Amortization
+    derivation_code:
+      formula: Gross Profit + other Operating income - all Operating costs - Depreciation - Amortization
+      components:
+        - Gross Profit
+        - other Operating income
+        - all Operating costs
+        - Depreciation
+        - Amortization
+    synonyms:
+      - Operating Profit
+      - Operating Loss
+      - EBIT
+      - Profit from Operations
+      - Operating Income
+      - Profit (loss) from operating activities
+
+  - canonical_name: Operating Profit Margin %
+    input_type: derived_else_direct
+    metric_type: margin
+    statement_type: Income Statement
+    is_mentioned: true
+    component_metrics:
+      - Operating Profit
+      - Revenue
+    formula_note: (Operating Profit / Revenue) * 100
+    derivation_code:
+      formula: (Operating Profit / Revenue) * 100
+      components:
+        - Operating Profit
+        - Revenue
+
+  - canonical_name: Income from Investments
+    input_type: direct
+    metric_type: absolute
+    statement_type: Income Statement
+    is_mentioned: false
+    synonyms:
+      - Investment Income
+      - Dividend Income
+      - Income from Associates
+      - Share of Profit from Joint Ventures
+      - Income from Investments
+      - Income(Expense) from Investments
+
+  - canonical_name: Loss from Investments
+    input_type: direct
+    metric_type: absolute
+    statement_type: Income Statement
+    is_mentioned: false
+    synonyms:
+      - Loss from Investments
+      - Loss on Investments
+      - Share of Loss from Joint Ventures
+      - Loss from Associates
+
+  - canonical_name: Bank charges
+    input_type: direct
+    metric_type: absolute
+    statement_type: Income Statement
+    is_mentioned: false
+    synonyms:
+      - Bank charges
+      - Bank fees
+      - Banking charges
+
+  - canonical_name: Write-off of financial assets
+    input_type: direct
+    metric_type: absolute
+    statement_type: Income Statement
+    is_mentioned: false
+    synonyms:
+      - Write-off of financial assets
+      - Impairment of financial assets
+      - Write-down of financial assets
+
+  - canonical_name: Taxation
+    input_type: direct
+    metric_type: absolute
+    statement_type: Income Statement
+    is_mentioned: false
+    synonyms:
+      - Taxation
+      - Income Tax Expense
+      - Income Tax
+      - Tax Charge
+      - Current Tax
+
+  - canonical_name: Extraordinary items
+    input_type: direct
+    metric_type: absolute
+    statement_type: Income Statement
+    is_mentioned: false
+    synonyms:
+      - Extraordinary items
+      - Exceptional items
+      - Extraordinary revenues
+      - Extraordinary expenses
+      - Non-recurring items
+
+  - canonical_name: Net Profit
+    input_type: derived_else_direct
+    metric_type: absolute
+    statement_type: Income Statement
+    is_mentioned: true
+    component_metrics:
+      - Operating Profit
+      - Interest Received
+      - Income from Investments
+      - Interest Paid
+      - Loss from Investments
+      - Bank charges
+      - Write-off of financial assets
+      - Taxation
+      - Extraordinary items
+    formula_note: Operating Profit + Interest Received + Income from Investments - Interest Paid - Loss from Investments - Bank charges - Write-off of financial assets - Taxation - Extraordinary items
+    derivation_code:
+      formula: Operating Profit + Interest Received + Income from Investments - Interest Paid - Loss from Investments - Bank charges - Write-off of financial assets - Taxation - Extraordinary items
+      components:
+        - Operating Profit
+        - Interest Received
+        - Income from Investments
+        - Interest Paid
+        - Loss from Investments
+        - Bank charges
+        - Write-off of financial assets
+        - Taxation
+        - Extraordinary items
+    synonyms:
+      - Net Profit
+      - Net Loss
+      - Profit for the Year
+      - Bottom Line
+      - Net Income
+      - profit (loss) from continuing operations
+
+  # ---------------------------------------------------------------------------
+  # BALANCE SHEET — main SCT metrics
+  # ---------------------------------------------------------------------------
+
+  - canonical_name: Net Worth
+    input_type: derived_else_direct
+    metric_type: absolute
+    statement_type: Balance Sheet
+    is_mentioned: true
+    component_metrics:
+      - Equity
+      - Reserves
+    formula_note: Equity + Reserves
+    derivation_code:
+      formula: Equity + Reserves
+      components:
+        - Equity
+        - Reserves
+
+  - canonical_name: Net Intangible Assets
+    input_type: direct
+    metric_type: absolute
+    statement_type: Balance Sheet
+    is_mentioned: false
+    synonyms:
+      - Net Intangible Assets
+      - Intangibles Net of Amortisation
+      - Total Net Intangible Assets
+
+  - canonical_name: Tangible Net Worth
+    input_type: derived
+    metric_type: absolute
+    statement_type: Balance Sheet
+    is_mentioned: true
+    component_metrics:
+      - Net Worth
+      - Net Intangible Assets
+    formula_note: Net Worth - Net Intangible Assets
+    derivation_code:
+      formula: Net Worth - Net Intangible Assets
+      components:
+        - Net Worth
+        - Net Intangible Assets
+
+  - canonical_name: Total Ext. Funded Debt
+    input_type: derived
+    metric_type: absolute
+    statement_type: Balance Sheet
+    is_mentioned: true
+    is_always_material: true
+    component_metrics:
+      - Short Term Debt
+      - Long Term Debt
+    formula_note: Short Term Debt + Long Term Debt
+    derivation_code:
+      formula: Short Term Debt + Long Term Debt
+      components:
+        - Short Term Debt
+        - Long Term Debt
+
+  - canonical_name: Cash + Mkt Securities
+    input_type: derived_else_direct
+    metric_type: absolute
+    statement_type: Balance Sheet
+    is_mentioned: true
+    component_metrics:
+      - Cash
+      - Marketable Investments
+    formula_note: Cash + Marketable Investments
+    derivation_code:
+      formula: Cash + Marketable Investments
+      components:
+        - Cash
+        - Marketable Investments
+    synonyms:
+      - Cash and Marketable Securities
+      - Cash and Cash Equivalents
+      - Cash and Short-term Investments
+
+  - canonical_name: Cash
+    input_type: direct
+    metric_type: absolute
+    statement_type: Balance Sheet
+    is_mentioned: false
+    synonyms:
+      - Cash and Bank Balances
+      - Cash on Hand
+      - Cash at Bank
+      - Bank Balances
+      - Balances with banks
+
+  - canonical_name: Marketable Investments
+    input_type: direct
+    metric_type: absolute
+    statement_type: Balance Sheet
+    is_mentioned: false
+    synonyms:
+      - Current Investments
+      - Marketable Securities
+      - Short-term Investments
+      - Liquid Mutual Funds
+      - Short-term deposits
+
+  - canonical_name: Net Funded Debt
+    input_type: derived
+    metric_type: absolute
+    statement_type: Balance Sheet
+    is_mentioned: true
+    component_metrics:
+      - Total Ext. Funded Debt
+      - Cash + Mkt Securities
+    formula_note: Total Ext. Funded Debt - Cash + Mkt Securities
+    derivation_code:
+      formula: Total Ext. Funded Debt - Cash + Mkt Securities
+      components:
+        - Total Ext. Funded Debt
+        - Cash + Mkt Securities
+
+  - canonical_name: Receivables
+    input_type: direct
+    metric_type: absolute
+    statement_type: Balance Sheet
+    is_mentioned: false
+    synonyms:
+      - Trade Receivables
+      - Debtors
+      - Accounts Receivable
+      - Trade Debtors
+      - Receivables from Customers
+
+  - canonical_name: Payables
+    input_type: direct
+    metric_type: absolute
+    statement_type: Balance Sheet
+    is_mentioned: false
+    synonyms:
+      - Trade Payables
+      - Creditors
+      - Accounts Payable
+      - Trade Creditors
+
+  - canonical_name: Inventory
+    input_type: direct
+    metric_type: absolute
+    statement_type: Balance Sheet
+    is_mentioned: false
+    synonyms:
+      - Total Inventories
+      - Total Stock
+      - Inventories
+
+  - canonical_name: Working Capital Days
+    input_type: derived
+    metric_type: absolute
+    statement_type: Balance Sheet
+    is_mentioned: true
+    component_metrics:
+      - Receivables
+      - Revenue
+      - Inventory
+      - Cost of Sales
+      - Payables
+    formula_note: (Receivables / Revenue * 365) + (Inventory / Cost of Sales * 365) - (Payables / Cost of Sales * 365)
+    derivation_code:
+      formula: (Receivables / Revenue * 365) + (Inventory / Cost of Sales * 365) - (Payables / Cost of Sales * 365)
+      components:
+        - Receivables
+        - Revenue
+        - Inventory
+        - Cost of Sales
+        - Payables
+
+  - canonical_name: Change in trade and other receivables
+    input_type: direct
+    metric_type: absolute
+    statement_type: Balance Sheet
+    is_mentioned: false
+    synonyms:
+      - Increase/(decrease) in trade and other receivables
+      - Change in accounts receivable
+      - AR movement
+      - Net change in trade and other receivables
+      - Change in trade AND other receivables
+
+  - canonical_name: Change in inventory
+    input_type: direct
+    metric_type: absolute
+    statement_type: Balance Sheet
+    is_mentioned: false
+    synonyms:
+      - Decrease (increase) in inventory
+      - Inventory movement
+      - Change in stock
+      - Stock movement
+      - Operating inventories - change
+      - Increase/decrease in inventory
+
+  - canonical_name: Change in trade and other payables
+    input_type: direct
+    metric_type: absolute
+    statement_type: Balance Sheet
+    is_mentioned: false
+    synonyms:
+      - Increase/(decrease) in trade and other payables
+      - Change in accounts payable
+      - AP movement
+      - Net change in trade and other payables
+      - Change in trade AND other payables
+
+  - canonical_name: Change in Working Capital
+    input_type: derived_else_direct
+    metric_type: absolute
+    statement_type: Balance Sheet
+    is_mentioned: true
+    component_metrics:
+      - Change in trade and other receivables
+      - Change in inventory
+      - Change in trade and other payables
+    formula_note: Change in trade and other receivables + Change in inventory + Change in trade and other payables
+    derivation_code:
+      formula: Change in trade and other receivables + Change in inventory + Change in trade and other payables
+      components:
+        - Change in trade and other receivables
+        - Change in inventory
+        - Change in trade and other payables
+    synonyms:
+      - Change in working capital
+      - Changes in working capital
+      - Working capital change
+      - Working capital changes
+      - Movement in working capital
+      - Movements in working capital
+
+  # ---------------------------------------------------------------------------
+  # CASH FLOW — main SCT metrics
+  # ---------------------------------------------------------------------------
+
+  - canonical_name: Operating cashflow
+    input_type: direct
+    metric_type: absolute
+    statement_type: Cash Flow
+    is_mentioned: true
+    synonyms:
+      - Net Cash from Operating Activities
+      - Net cash from operating activities
+      - Net cash provided by operating activities
+      - Net cash generated from operating activities
+      - Net cash flows from operating activities
+      - Cash generated from operations
+
+  - canonical_name: Investing cashflow
+    input_type: direct
+    metric_type: absolute
+    statement_type: Cash Flow
+    is_mentioned: true
+    synonyms:
+      - Net Cash (used in)/from Investing Activities
+      - Net cash (used in)/from investing activities
+      - Net cash from investing activities
+      - Net cash provided by investing activities
+      - Net cash used in investing activities
+      - Purchase of property plant and equipment
+
+  - canonical_name: Financing cashflow
+    input_type: direct
+    metric_type: absolute
+    statement_type: Cash Flow
+    is_mentioned: true
+    synonyms:
+      - Net Cash (used in)/from Financing Activities
+      - Net cash (used in)/from financing activities
+      - Net cash from financing activities
+      - Net cash provided by financing activities
+      - Net cash used in financing activities
+
+  - canonical_name: w/w Dividends
+    input_type: direct
+    metric_type: absolute
+    statement_type: Cash Flow
+    is_mentioned: true
+    synonyms:
+      - Dividends paid
+      - Dividend paid
+      - Payment of dividends
+      - Payments of dividends
+      - Dividends - paid
+      - Dividends paid to shareholders
+      - Dividends paid to equity holders
+
+  - canonical_name: Free cashflow
+    input_type: derived
+    metric_type: absolute
+    statement_type: Cash Flow
+    is_mentioned: true
+    component_metrics:
+      - Operating cashflow
+      - Capital Expenditure
+      - w/w Dividends
+    formula_note: Operating cashflow + Capital Expenditure + w/w Dividends
+    derivation_code:
+      formula: Operating cashflow + Capital Expenditure + w/w Dividends
+      components:
+        - Operating cashflow
+        - Capital Expenditure
+        - w/w Dividends
+
+  # ---------------------------------------------------------------------------
+  # RATIOS — derived metrics
+  # ---------------------------------------------------------------------------
+
+  - canonical_name: Ext. Gearing (TFD/TNW)
+    input_type: derived
+    metric_type: ratio
+    statement_type: Ratios
+    is_mentioned: true
+    component_metrics:
+      - Total Ext. Funded Debt
+      - Tangible Net Worth
+    formula_note: Total Ext. Funded Debt / Tangible Net Worth
+    derivation_code:
+      formula: Total Ext. Funded Debt / Tangible Net Worth
+      components:
+        - Total Ext. Funded Debt
+        - Tangible Net Worth
+
+  - canonical_name: NFD / EBITDA
+    input_type: derived
+    metric_type: ratio
+    statement_type: Ratios
+    is_mentioned: true
+    component_metrics:
+      - Net Funded Debt
+      - EBITDA
+    formula_note: Net Funded Debt / EBITDA
+    derivation_code:
+      formula: Net Funded Debt / EBITDA
+      components:
+        - Net Funded Debt
+        - EBITDA
+
+  - canonical_name: TFD / EBITDA
+    input_type: derived
+    metric_type: ratio
+    statement_type: Ratios
+    is_mentioned: true
+    component_metrics:
+      - Total Ext. Funded Debt
+      - EBITDA
+    formula_note: Total Ext. Funded Debt / EBITDA
+    derivation_code:
+      formula: Total Ext. Funded Debt / EBITDA
+      components:
+        - Total Ext. Funded Debt
+        - EBITDA
+
+  - canonical_name: NOCF / Interest
+    input_type: derived
+    metric_type: ratio
+    statement_type: Ratios
+    is_mentioned: true
+    component_metrics:
+      - Operating cashflow
+      - Interest Expense (Net)
+    formula_note: Operating cashflow / Interest Expense (Net)
+    derivation_code:
+      formula: Operating cashflow / Interest Expense (Net)
+      components:
+        - Operating cashflow
+        - Interest Expense (Net)
+
+  # ---------------------------------------------------------------------------
+  # OTHERS
+  # ---------------------------------------------------------------------------
+
+  - canonical_name: Capital Expenditure
+    input_type: direct
+    metric_type: absolute
+    statement_type: Others
+    is_mentioned: true
+    is_always_material: true
+    synonyms:
+      - Capital Expenditure
+      - Purchases of property, plant and equipment
+      - Purchase of property plant and equipment
+      - Purchase of PPE
+      - Additions to property plant and equipment
+      - Capex
+      - Capital investments in property plant and equipment

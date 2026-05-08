@@ -1,10 +1,15 @@
 <!DOCTYPE html>
+<!--
+  Input: POST /api/spread SSE stream from FastAPI backend
+  Output: Interactive SCT table with real-time cell updates, audit-trail tooltips
+  Position: Presentation layer — consumes backend SSE, no mock data path.
+  If modified, update this header and frontend/README_frontend.md.
+-->
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Financial Spreading SCT</title>
-    <!-- Tailwind CSS for rapid styling -->
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
         /* Flash animation for incoming data */
@@ -79,6 +84,38 @@
         .row-selected {
             background-color: #f1f5f9; /* Slate 100 */
         }
+
+        /* Log panel (right sidebar) */
+        #log-panel {
+            transition: width 0.3s ease, padding 0.3s ease, opacity 0.3s ease;
+            overflow: hidden;
+        }
+        .log-panel-closed {
+            width: 0 !important;
+            padding-left: 0 !important;
+            padding-right: 0 !important;
+            border: none !important;
+            opacity: 0;
+        }
+        .log-entry {
+            padding: 2px 0;
+            border-bottom: 1px solid #374151;
+            line-height: 1.4;
+        }
+        .log-entry .ts { color: #9ca3af; }
+        .log-entry.verify { color: #60a5fa; }
+        .log-entry.metric { color: #34d399; }
+        .log-entry.error { color: #f87171; }
+        .log-entry.system { color: #fbbf24; }
+        .log-entry.complete { color: #a78bfa; }
+
+        /* Select-all checkbox */
+        #select-all-chk {
+            width: 1rem;
+            height: 1rem;
+            cursor: pointer;
+            accent-color: #7c3aed;
+        }
     </style>
 </head>
 <body class="bg-gray-50 h-screen flex text-sm text-gray-800 font-sans overflow-hidden">
@@ -90,10 +127,12 @@
                 <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
                 History
             </h2>
+            <button onclick="refreshHistory()" class="text-xs text-gray-500 hover:text-purple-600 p-1 rounded hover:bg-gray-200 transition" title="Refresh history">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+            </button>
         </div>
         <div class="p-4 flex-1 overflow-y-auto">
             <ul id="history-list" class="space-y-2">
-                <!-- History items injected here -->
                 <li class="text-xs text-gray-400 italic" id="empty-history">No past analyses</li>
             </ul>
         </div>
@@ -110,16 +149,17 @@
                 <h1 class="text-xl font-bold text-gray-800 truncate">Financial Spreading SCT</h1>
             </div>
 
-            <!-- Data Source Selection (State 1) -->
-            <div class="flex items-center gap-2">
-                <label for="data-source" class="font-semibold text-gray-700 whitespace-nowrap hidden sm:block">Data Source:</label>
-                <select id="data-source" class="font-bold bg-gray-100 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2 cursor-pointer outline-none max-w-[200px]">
-                    <option value="" disabled selected>Please select data source</option>
-                    <option value="Moody's">Moody's</option>
-                    <option value="S&P Global">S&P Global</option>
-                    <option value="Fitch">Fitch Ratings</option>
-                    <option value="Internal Model">Internal Model</option>
-                </select>
+            <!-- Company Selection (State 1) -->
+            <div class="flex items-center gap-3">
+                <div class="flex items-center gap-1">
+                    <label for="company-select" class="font-semibold text-gray-700 whitespace-nowrap hidden sm:block">Company:</label>
+                    <select id="company-select" class="font-bold bg-gray-100 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2 cursor-pointer outline-none max-w-[200px]">
+                        <option value="" disabled selected>Select company</option>
+                    </select>
+                </div>
+                <button onclick="toggleLogPanel()" id="btn-log-toggle" class="p-2 hover:bg-gray-100 rounded-md text-gray-500 transition" title="Toggle Log Panel">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"></path></svg>
+                </button>
             </div>
         </header>
 
@@ -137,7 +177,10 @@
                                 <th class="p-3 border-b border-gray-200 font-semibold text-center w-24">FY23</th>
                                 <th class="p-3 border-b border-gray-200 font-semibold text-center w-24">FY24</th>
                                 <th class="p-3 border-b border-gray-200 font-semibold text-center w-24 border-r">FY25</th>
-                                <th class="p-3 border-b border-gray-200 font-semibold text-center w-20">Select</th>
+                                <th class="p-3 border-b border-gray-200 font-semibold text-center w-28">YoY Change</th>
+                                <th class="p-3 border-b border-gray-200 font-semibold text-center w-20">
+                                    <input type="checkbox" id="select-all-chk" onclick="toggleSelectAll()" title="Select / Deselect all metrics">
+                                </th>
                             </tr>
                         </thead>
                         <tbody id="sct-body" class="divide-y divide-gray-200 cursor-pointer bg-white">
@@ -156,7 +199,7 @@
                     <div><strong>Tokens:</strong> <span id="sum-tokens">--</span></div>
                 </div>
                 <div id="summary-placeholder" class="text-gray-400 text-xs italic text-center sm:text-left w-full sm:w-auto">
-                    Select indicators and data source to begin analysis.
+                    Select a company and at least 2 indicators to begin analysis.
                 </div>
 
                 <button id="btn-action" onclick="handleActionClick()" disabled class="w-full sm:w-auto px-6 py-2.5 bg-purple-600 text-white font-semibold rounded-lg shadow-md hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition duration-150 ease-in-out whitespace-nowrap">
@@ -165,6 +208,23 @@
             </div>
         </div>
     </main>
+
+    <!-- Right Sidebar: Log Panel -->
+    <aside id="log-panel" class="w-80 bg-gray-900 text-gray-200 border-l border-gray-700 flex flex-col shadow-sm flex-shrink-0 log-panel-closed">
+        <div class="p-3 flex items-center justify-between border-b border-gray-700 bg-gray-800 flex-shrink-0">
+            <h2 class="font-semibold text-gray-300 text-sm flex items-center gap-2">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
+                Analysis Log
+            </h2>
+            <div class="flex items-center gap-1">
+                <span id="log-count" class="text-xs text-gray-500 mr-1">0</span>
+                <button onclick="clearLog()" class="text-xs text-gray-500 hover:text-gray-300 p-1 rounded hover:bg-gray-700 transition" title="Clear log">Clear</button>
+            </div>
+        </div>
+        <div id="log-content" class="p-3 flex-1 overflow-y-auto font-mono text-xs leading-relaxed">
+            <div class="text-gray-600 italic text-xs" id="log-empty">No analysis running. Select metrics and run an analysis to see logs here.</div>
+        </div>
+    </aside>
 
     <script>
         // --- DATA DEFINITION ---
@@ -185,17 +245,24 @@
             { sec: 'Ratios', met: 'TFD/ EBITDA (x)' }, { sec: 'Ratios', met: 'NOCF / Interest (x)' },
             { sec: 'Others', met: 'Capital Expenditure' }
         ];
-        const years = ['FY21', 'FY22', 'FY23', 'FY24', 'FY25'];
+        const years = ['2021', '2022', '2023', '2024', '2025'];
+        const BACKEND_URL = 'http://localhost:8000';
 
         // --- STATE VARIABLES ---
         // states: 'SELECTION', 'ANALYSIS', 'RESULTS'
-        let currentState = 'SELECTION'; 
+        let currentState = 'SELECTION';
         let selectedRows = new Set();
         let startTime = 0;
+        let currentWorkflowId = null;
+        let receivedMetricCount = 0;
+        let historyCache = {};
+        let analysisLog = [];          // [{ts, type, message}]
+        let logPanelOpen = false;
+        let logCacheByWorkflow = {};   // workflowId -> log entries
 
         // --- DOM ELEMENTS ---
         const tbody = document.getElementById('sct-body');
-        const sourceSelect = document.getElementById('data-source');
+        const companySelect = document.getElementById('company-select');
         const btnAction = document.getElementById('btn-action');
         const summaryDiv = document.getElementById('results-summary');
         const summaryPlaceholder = document.getElementById('summary-placeholder');
@@ -233,6 +300,15 @@
                     `;
                 });
 
+                // YoY Change cell
+                html += `
+                    <td class="p-2 border-r border-gray-100 text-center relative">
+                        <div id="cell-${index}-YoY" class="w-full h-full min-h-[24px] flex items-center justify-center text-gray-700">
+                            <!-- YoY value injected here -->
+                        </div>
+                    </td>
+                `;
+
                 html += `
                     <td class="p-3 text-center">
                         <input type="checkbox" id="chk-${index}" onchange="toggleRowSelection(${index}, true)" 
@@ -245,16 +321,16 @@
             });
 
             // Listeners
-            sourceSelect.addEventListener('change', updateButtonState);
+            companySelect.addEventListener('change', updateButtonState);
         }
 
         // --- LOGIC: SELECTION STATE ---
         function toggleRowSelection(index, fromCheckbox = false) {
             if (currentState !== 'SELECTION') return;
-            
+
             const tr = tbody.children[index];
             const chk = document.getElementById(`chk-${index}`);
-            
+
             if (selectedRows.has(index)) {
                 selectedRows.delete(index);
                 chk.checked = false;
@@ -265,19 +341,20 @@
                 tr.classList.add('row-selected');
             }
             updateButtonState();
+            updateSelectAllState();
         }
 
         function updateButtonState() {
             if (currentState !== 'SELECTION') return;
-            const hasSource = sourceSelect.value !== "";
+            const hasCompany = companySelect.value !== "";
             const hasValidCount = selectedRows.size > 1;
 
-            if (hasSource && hasValidCount) {
+            if (hasCompany && hasValidCount) {
                 btnAction.disabled = false;
                 summaryPlaceholder.innerText = "Ready to run analysis.";
             } else {
                 btnAction.disabled = true;
-                if (!hasSource) summaryPlaceholder.innerText = "Please select a data source to begin.";
+                if (!hasCompany) summaryPlaceholder.innerText = "Please select a company to begin.";
                 else summaryPlaceholder.innerText = `Select at least 2 indicators (${selectedRows.size} selected).`;
             }
         }
@@ -291,99 +368,241 @@
         function startAnalysis() {
             currentState = 'ANALYSIS';
             startTime = Date.now();
-            
+            receivedMetricCount = 0;
+            let lastEventTime = Date.now();
+
+            // Initialize log
+            analysisLog = [];
+            const content = document.getElementById('log-content');
+            const emptyMsg = document.getElementById('log-empty');
+            content.innerHTML = '';
+            if (emptyMsg) emptyMsg.remove();
+            updateLogCount();
+            addLogEntry('system', `Starting analysis for ${companySelect.value} — ${years.length} years, ${selectedRows.size} metrics`);
+
             // UI Updates
             btnAction.disabled = true;
             btnAction.innerText = "Analyzing...";
             btnAction.classList.remove('bg-purple-600', 'hover:bg-purple-700');
             btnAction.classList.add('bg-gray-400');
-            sourceSelect.disabled = true;
-            summaryPlaceholder.innerText = "Analysis in progress. Please wait...";
+            companySelect.disabled = true;
+            document.getElementById('select-all-chk').disabled = true;
+            summaryPlaceholder.innerText = "Connecting to backend...";
 
-            // Gather all cells that need calculation
-            let queue = [];
+            // Build request payload
+            const metricsPayload = [];
             selectedRows.forEach(rowIndex => {
-                years.forEach(yr => {
-                    queue.push({ r: rowIndex, c: yr });
+                metricsPayload.push({
+                    row_index: rowIndex,
+                    metric_name: indicators[rowIndex].met
                 });
             });
 
-            // Shuffle queue to simulate asynchronous parallel network requests arriving randomly
-            queue = queue.sort(() => Math.random() - 0.5);
+            const body = JSON.stringify({
+                company_name: companySelect.value,
+                year_periods: years,
+                metrics: metricsPayload,
+                data_source: "Internal Model"
+            });
 
-            simulateApiCalls(queue, 0);
+            // Connect to backend SSE stream (mock or real)
+            const endpoint = companySelect.value === 'TEST (Mock)'
+                ? `${BACKEND_URL}/api/mock/spread`
+                : `${BACKEND_URL}/api/spread`;
+
+            fetch(endpoint, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: body
+            }).then(response => {
+                if (!response.ok) {
+                    throw new Error(`Backend returned ${response.status}`);
+                }
+                summaryPlaceholder.innerText = "Analysis in progress. Receiving data...";
+                return consumeSSEStream(response);
+            }).then(() => {
+                finishAnalysis();
+            }).catch(err => {
+                summaryPlaceholder.innerText = `Connection error: ${err.message}. Check backend.`;
+                btnAction.disabled = false;
+                btnAction.innerText = "Retry";
+                btnAction.classList.remove('bg-gray-400');
+                btnAction.classList.add('bg-purple-600', 'hover:bg-purple-700');
+                currentState = 'SELECTION';
+            });
         }
 
-        function simulateApiCalls(queue, currentIndex) {
-            if (currentIndex >= queue.length) {
-                finishAnalysis();
+        // --- SSE Stream Consumer ---
+        async function consumeSSEStream(response) {
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n');
+                buffer = lines.pop() || '';
+
+                for (const line of lines) {
+                    if (line.startsWith('data: ')) {
+                        try {
+                            const event = JSON.parse(line.slice(6));
+                            handleSSEEvent(event);
+                        } catch (e) {
+                            // Skip unparseable lines
+                        }
+                    }
+                }
+            }
+        }
+
+        function handleSSEEvent(event) {
+            if (event.event === 'tree_verification') {
+                const results = event.results || {};
+                const errors = Object.entries(results).filter(([, r]) => r.status === 'error');
+                if (errors.length > 0) {
+                    const names = errors.map(([y, r]) => `${y}: ${r.error}`).join('; ');
+                    summaryPlaceholder.innerHTML = `<span class="text-red-600 font-semibold">Tree issues detected:</span> ${names}`;
+                    addLogEntry('error', `Tree verification FAILED: ${names}`);
+                } else {
+                    summaryPlaceholder.innerText = "Trees verified. Running MCTS search...";
+                    const okYears = Object.entries(results)
+                        .filter(([, r]) => r.status === 'ok' || r.status === 'degraded')
+                        .map(([y, r]) => `${y}: ${r.status} (nodes=${r.total_nodes}, leaves=${r.leaves_with_text})`);
+                    okYears.forEach(msg => addLogEntry('verify', msg));
+                }
                 return;
             }
 
-            const item = queue[currentIndex];
-            const cellDiv = document.getElementById(`cell-${item.r}-${item.c}`);
-            const metricName = indicators[item.r].met;
-            
-            // Random delay between 50ms and 300ms
-            setTimeout(() => {
-                // Remove previous flash to allow re-trigger
-                cellDiv.classList.remove('flash-cell');
-                void cellDiv.offsetWidth; // trigger reflow
-                
-                // 15% chance to fail (warning), 85% to succeed
-                const isSuccess = Math.random() > 0.15;
-                
-                if (isSuccess) {
-                    // Generate random mock financial value
-                    const val = (Math.random() * 10000 + 1000).toLocaleString('en-US', {maximumFractionDigits: 0});
-                    const sourceName = sourceSelect.value;
-                    
-                    cellDiv.innerHTML = `
-                        <div class="tooltip-container w-full h-full text-center flex items-center justify-center">
-                            ${val}
-                            <div class="tooltip">
-                                <p><strong>Audit Trail</strong></p>
-                                <p class="mt-1">Calculated by: Internal Processing Engine</p>
-                                <p>Data Sourced from: <strong>${sourceName}</strong></p>
-                                <hr class="my-1 border-gray-300">
-                                <p>Formula: [${metricName}] = <em>Component_A * Factor_B</em></p>
-                            </div>
-                        </div>
-                    `;
+            if (event.event === 'year_error') {
+                console.warn(`Year ${event.year}: ${event.message}`);
+                addLogEntry('error', `Year ${event.year}: ${event.message}`);
+                return;
+            }
+
+            if (event.event === 'complete') {
+                currentWorkflowId = event.workflow_id || null;
+                addLogEntry('complete', `Analysis complete. Workflow ID: ${currentWorkflowId || 'N/A'}`);
+                return;
+            }
+
+            // Metric event: { canonical_name, year, row_index, value, status, formula, error, source_location, component_details }
+            if (event.row_index != null && event.year) {
+                receivedMetricCount++;
+                // Normalize YoY year keys (e.g. "2022_YoY" → "YoY") for cell lookup
+                const normalizedEvent = { ...event };
+                if (event.year.endsWith('_YoY')) {
+                    normalizedEvent.year = 'YoY';
+                }
+                updateCellFromSSE(normalizedEvent);
+                summaryPlaceholder.innerText = `Analysis in progress. Received ${receivedMetricCount} metric updates...`;
+
+                const statusIcon = event.status === 'resolved' ? '✓' : event.status === 'partial' ? '~' : '✗';
+                const valStr = event.value != null ? Number(event.value).toLocaleString('en-US', {maximumFractionDigits: 0}) : 'N/A';
+                addLogEntry('metric', `[${statusIcon}] ${event.canonical_name}  year=${event.year}  value=${valStr}  ${event.status.toUpperCase()}`);
+
+                // Also update the per-year YoY cell (e.g. "2022_YoY") if it exists
+                if (event.year.endsWith('_YoY')) {
+                    const yoyCellDiv = document.getElementById(`cell-${event.row_index}-${event.year}`);
+                    if (yoyCellDiv) {
+                        updateCellFromSSE(event);
+                    }
+                }
+            }
+        }
+
+        function updateCellFromSSE(event) {
+            const { row_index, year, value, status, formula, error, component_details, source_location } = event;
+            const cellDiv = document.getElementById(`cell-${row_index}-${year}`);
+            if (!cellDiv) return;
+
+            cellDiv.classList.remove('flash-cell');
+            void cellDiv.offsetWidth;
+
+            const metricName = indicators[row_index] ? indicators[row_index].met : event.canonical_name;
+            const sourceName = companySelect.value === 'TEST (Mock)' ? 'TEST' : 'Internal Model';
+
+            if (status === 'resolved' && value != null) {
+                const isYoY = year === 'YoY';
+                let displayHtml;
+
+                if (isYoY) {
+                    const valNum = parseFloat(value);
+                    const isPositive = valNum >= 0;
+                    const arrow = isPositive ? '▲' : '▼';
+                    const colorClass = isPositive ? 'text-green-600' : 'text-red-500';
+                    displayHtml = `<span class="${colorClass} font-semibold">${arrow} ${Math.abs(valNum).toFixed(1)}%</span>`;
                 } else {
-                    // Fail state: Yellow Warning Marker
-                    cellDiv.innerHTML = `
-                        <div class="tooltip-container text-yellow-500 w-full h-full flex items-center justify-center">
-                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
-                            <div class="tooltip text-red-600 bg-red-50 border-red-200">
-                                Data gap or missing component prevented inclusion.
-                            </div>
-                        </div>
-                    `;
-                    // Color the parent td slightly yellow
-                    cellDiv.parentElement.classList.add('bg-yellow-50');
+                    const formatted = Number(value).toLocaleString('en-US', { maximumFractionDigits: 0 });
+                    displayHtml = formatted;
                 }
 
-                cellDiv.classList.add('flash-cell');
+                cellDiv.innerHTML = `
+                    <div class="tooltip-container w-full h-full text-center flex items-center justify-center">
+                        ${displayHtml}
+                        <div class="tooltip">
+                            <p><strong>Audit Trail</strong></p>
+                            <p class="mt-1">Metric: <strong>${metricName}</strong></p>
+                            <p>Data Sourced from: <strong>${sourceName}</strong></p>
+                            ${source_location ? `<p class="mt-1 text-xs text-gray-500">Source: ${source_location}</p>` : ''}
+                            ${formula ? `<hr class="my-1 border-gray-300"><p>Formula: <em>${formula}</em></p>` : ''}
+                            ${component_details && component_details.length ? `
+                                <hr class="my-1 border-gray-300">
+                                <p class="text-xs font-semibold text-gray-500 mb-0.5">Components:</p>
+                                ${component_details.map(cd => `
+                                    <p class="text-xs text-gray-600">
+                                        <span class="font-medium">${cd.component_name}</span>: ${cd.value != null ? Number(cd.value).toLocaleString('en-US', {maximumFractionDigits: 0}) : 'N/A'}
+                                        ${cd.source_location ? `<span class="text-gray-400"> (${cd.source_location})</span>` : ''}
+                                    </p>
+                                `).join('')}
+                            ` : ''}
+                            <p class="mt-1 text-xs text-gray-500">Year: ${year}</p>
+                        </div>
+                    </div>
+                `;
+                cellDiv.parentElement.classList.remove('bg-yellow-50');
+            } else {
+                // Unresolved or error
+                cellDiv.innerHTML = `
+                    <div class="tooltip-container text-yellow-500 w-full h-full flex items-center justify-center">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
+                        <div class="tooltip text-red-600 bg-red-50 border-red-200">
+                            ${error || 'Data unavailable for this metric.'}
+                        </div>
+                    </div>
+                `;
+                cellDiv.parentElement.classList.add('bg-yellow-50');
+            }
 
-                // Process next item
-                simulateApiCalls(queue, currentIndex + 1);
-            }, Math.random() * 200 + 20); // Faster simulation for demo purposes
+            cellDiv.classList.add('flash-cell');
         }
 
         function finishAnalysis() {
             currentState = 'RESULTS';
             const durationSec = ((Date.now() - startTime) / 1000).toFixed(1);
-            
-            // Calculate tokens (mock logic based on selected size)
-            const mockTokens = (selectedRows.size * 5 * Math.floor(Math.random() * 20 + 30)).toLocaleString();
+
+            addLogEntry('system', `Duration: ${durationSec}s | Total metric updates: ${receivedMetricCount}`);
+            addLogEntry('complete', `--- Analysis finished ---`);
+
+            // Store log for historical recall
+            if (currentWorkflowId) {
+                logCacheByWorkflow[currentWorkflowId] = [...analysisLog];
+            }
 
             // UI Updates: Footer
             document.getElementById('sum-time').innerText = `${durationSec}s`;
-            document.getElementById('sum-model').innerText = "Gemini 3.1 Pro (Web)";
-            document.getElementById('sum-tokens').innerText = mockTokens;
-            
-            summaryPlaceholder.classList.add('hidden');
+            document.getElementById('sum-model').innerText = "MCTS + Azure OpenAI";
+            document.getElementById('sum-tokens').innerText = receivedMetricCount > 0 ? `${receivedMetricCount} updates` : 'No metrics resolved';
+
+            if (receivedMetricCount === 0) {
+                summaryPlaceholder.classList.remove('hidden');
+                summaryPlaceholder.innerHTML = '<span class="text-red-600 font-semibold">No metrics were resolved.</span> Check that trees exist in the DB for the selected company and years.';
+            } else {
+                summaryPlaceholder.classList.add('hidden');
+            }
             summaryDiv.classList.remove('hidden');
 
             // UI Updates: Button
@@ -395,15 +614,221 @@
             // Add History Record
             const now = new Date();
             const ts = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')} ${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
-            const historyTitle = `${sourceSelect.value} - ${ts}`;
-            
+            const dataSource = companySelect.value === 'TEST (Mock)' ? 'TEST' : 'Internal Model';
+            const historyTitle = `${dataSource} - ${ts}`;
+
             document.getElementById('empty-history')?.remove();
-            
+
             const li = document.createElement('li');
             li.className = "text-sm p-2 rounded hover:bg-gray-200 cursor-pointer text-gray-700 truncate border border-transparent hover:border-gray-300 transition";
             li.innerText = historyTitle;
             li.title = `Analyzed ${selectedRows.size} indicators`;
+            if (currentWorkflowId) {
+                li.dataset.workflowId = currentWorkflowId;
+                li.onclick = () => restoreWorkflow(currentWorkflowId);
+                li.title += ' (click to restore)';
+            } else {
+                li.classList.add('text-gray-400', 'cursor-not-allowed');
+                li.title += ' (not persisted — cannot restore)';
+            }
             historyList.prepend(li);
+        }
+
+        // --- HISTORY MANAGEMENT ---
+        async function loadHistory() {
+            try {
+                const resp = await fetch(`${BACKEND_URL}/api/history`);
+                if (!resp.ok) return;
+                const workflows = await resp.json();
+                if (!workflows.length) return;
+
+                document.getElementById('empty-history')?.remove();
+                historyList.innerHTML = '';
+                workflows.forEach(wf => {
+                    const li = document.createElement('li');
+                    const ts = wf.created_at ? wf.created_at.replace('T', ' ').substring(0, 16) : '';
+                    li.className = "text-sm p-2 rounded hover:bg-gray-200 cursor-pointer text-gray-700 truncate border border-transparent hover:border-gray-300 transition";
+                    li.innerText = `${wf.data_source} - ${ts}`;
+                    li.title = `Company: ${wf.company_name} | ${wf.metric_count} metrics | Click to restore`;
+                    li.dataset.workflowId = wf.workflow_id;
+                    li.onclick = () => restoreWorkflow(wf.workflow_id);
+                    historyList.appendChild(li);
+                });
+            } catch (e) {
+                // Silently fail — history is non-critical
+            }
+        }
+
+        function refreshHistory() {
+            loadHistory();
+        }
+
+        async function restoreWorkflow(workflowId) {
+            try {
+                const resp = await fetch(`${BACKEND_URL}/api/history/${workflowId}`);
+                if (!resp.ok) {
+                    alert(`Failed to load workflow: ${resp.status}`);
+                    return;
+                }
+                const wf = await resp.json();
+                const sctData = wf.sct_data || {};
+
+                // Switch to RESULTS state and populate the table
+                currentState = 'RESULTS';
+
+                // Set company and source dropdowns to match restored workflow
+                if (wf.company_name) {
+                    // Ensure company exists in dropdown; add it if missing
+                    let found = false;
+                    for (const opt of companySelect.options) {
+                        if (opt.value === wf.company_name) { found = true; break; }
+                    }
+                    if (!found) {
+                        const opt = document.createElement('option');
+                        opt.value = wf.company_name;
+                        opt.textContent = wf.company_name;
+                        companySelect.appendChild(opt);
+                    }
+                    companySelect.value = wf.company_name;
+                }
+                companySelect.disabled = true;
+                document.getElementById('select-all-chk').disabled = true;
+
+                // Clear all cells first
+                indicators.forEach((_, rowIndex) => {
+                    years.forEach(yr => {
+                        const cellDiv = document.getElementById(`cell-${rowIndex}-${yr}`);
+                        if (cellDiv) { cellDiv.innerHTML = ''; cellDiv.classList.remove('flash-cell'); cellDiv.parentElement.classList.remove('bg-yellow-50'); }
+                    });
+                    const yoyDiv = document.getElementById(`cell-${rowIndex}-YoY`);
+                    if (yoyDiv) { yoyDiv.innerHTML = ''; yoyDiv.classList.remove('flash-cell'); yoyDiv.parentElement.classList.remove('bg-yellow-50'); }
+                });
+
+                // Build metric-to-row index map from frontend indicators for fast lookup
+                const nameToRow = {};
+                indicators.forEach((ind, i) => {
+                    nameToRow[_normalizeName(ind.met)] = i;
+                });
+
+                // Populate from SCT data
+                for (const [year, sections] of Object.entries(sctData)) {
+                    for (const metrics of Object.values(sections)) {
+                        for (const metric of metrics) {
+                            const rowIndex = _findRowIndexByName(metric.canonical_name, nameToRow);
+                            if (rowIndex == null) continue;
+                            const cellDiv = document.getElementById(`cell-${rowIndex}-${year}`);
+                            if (!cellDiv) continue;
+
+                            if (metric.status === 'resolved' && metric.value != null) {
+                                const formatted = Number(metric.value).toLocaleString('en-US', { maximumFractionDigits: 0 });
+                                const metric_cds = metric.component_details || [];
+                                cellDiv.innerHTML = `
+                                    <div class="tooltip-container w-full h-full text-center flex items-center justify-center">
+                                        ${formatted}
+                                        <div class="tooltip">
+                                            <p><strong>Audit Trail</strong></p>
+                                            <p class="mt-1">Metric: <strong>${metric.canonical_name}</strong></p>
+                                            <p>Data Sourced from: <strong>${wf.data_source}</strong></p>
+                                            ${metric.source_location ? `<p class="mt-1 text-xs text-gray-500">Source: ${metric.source_location}</p>` : ''}
+                                            ${metric.formula_used ? `<hr class="my-1 border-gray-300"><p>Formula: <em>${metric.formula_used}</em></p>` : ''}
+                                            ${metric_cds.length ? `
+                                                <hr class="my-1 border-gray-300">
+                                                <p class="text-xs font-semibold text-gray-500 mb-0.5">Components:</p>
+                                                ${metric_cds.map(cd => `
+                                                    <p class="text-xs text-gray-600">
+                                                        <span class="font-medium">${cd.component_name}</span>: ${cd.value != null ? Number(cd.value).toLocaleString('en-US', {maximumFractionDigits: 0}) : 'N/A'}
+                                                        ${cd.source_location ? `<span class="text-gray-400"> (${cd.source_location})</span>` : ''}
+                                                    </p>
+                                                `).join('')}
+                                            ` : ''}
+                                            <p class="mt-1 text-xs text-gray-500">Year: ${year} | Method: ${metric.resolution_method}</p>
+                                        </div>
+                                    </div>
+                                `;
+                                cellDiv.parentElement.classList.remove('bg-yellow-50');
+                            } else {
+                                cellDiv.innerHTML = `
+                                    <div class="tooltip-container text-yellow-500 w-full h-full flex items-center justify-center">
+                                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
+                                        <div class="tooltip text-red-600 bg-red-50 border-red-200">
+                                            ${metric.error || 'Data unavailable.'}
+                                        </div>
+                                    </div>
+                                `;
+                                cellDiv.parentElement.classList.add('bg-yellow-50');
+                            }
+                        }
+                    }
+                }
+
+                // Show results footer
+                document.getElementById('sum-time').innerText = '-- (restored)';
+                document.getElementById('sum-model').innerText = 'MCTS + Azure OpenAI';
+                document.getElementById('sum-tokens').innerText = '--';
+                summaryPlaceholder.classList.add('hidden');
+                summaryDiv.classList.remove('hidden');
+
+                // Restore logs if cached; otherwise show fallback
+                const cachedLog = logCacheByWorkflow[workflowId];
+                const logContent = document.getElementById('log-content');
+                logContent.innerHTML = '';
+                if (cachedLog && cachedLog.length > 0) {
+                    analysisLog = [...cachedLog];
+                    cachedLog.forEach(entry => renderLogEntry(entry));
+                } else {
+                    analysisLog = [];
+                    const div = document.createElement('div');
+                    div.className = 'text-gray-500 italic text-xs';
+                    div.id = 'log-empty';
+                    div.innerHTML = `<p>Detailed execution logs are not available for this historical run.</p>
+                        <p class="mt-1">Logs are only cached during the current browser session.</p>
+                        <p class="mt-1 text-gray-600">Company: ${wf.company_name || 'N/A'} | Years: ${wf.year_periods ? wf.year_periods.join(', ') : 'N/A'} | Source: ${wf.data_source || 'N/A'}</p>`;
+                    logContent.appendChild(div);
+                }
+                updateLogCount();
+
+                // Auto-open log panel if not open
+                if (!logPanelOpen) toggleLogPanel();
+
+                // Update button
+                btnAction.disabled = false;
+                btnAction.innerText = "Next analysis";
+                btnAction.classList.remove('bg-gray-400', 'bg-purple-600', 'hover:bg-purple-700');
+                btnAction.classList.add('bg-blue-600', 'hover:bg-blue-700');
+
+            } catch (e) {
+                console.error('restoreWorkflow error:', e);
+                alert(`Error restoring workflow: ${e.message}`);
+            }
+        }
+
+        function _normalizeName(name) {
+            if (!name) return '';
+            return name.toLowerCase().replace(/\(loss\)/gi, '').replace(/\(x\)/gi, '').replace(/\s+/g, ' ').trim();
+        }
+
+        function _findRowIndexByName(canonicalName, nameToRow) {
+            if (!canonicalName) return null;
+            const target = _normalizeName(canonicalName);
+            if (!target) return null;
+
+            // Use pre-built lookup map if provided (fast path)
+            if (nameToRow) {
+                if (nameToRow[target] != null) return nameToRow[target];
+                // Fuzzy: check if any key includes target or vice versa
+                for (const [name, idx] of Object.entries(nameToRow)) {
+                    if (name.includes(target) || target.includes(name)) return idx;
+                }
+                return null;
+            }
+
+            // Fallback: linear scan through indicators
+            for (let i = 0; i < indicators.length; i++) {
+                const met = _normalizeName(indicators[i].met);
+                if (met === target) return i;
+                if (met.includes(target) || target.includes(met)) return i;
+            }
+            return null;
         }
 
         function resetToSelection() {
@@ -417,6 +842,13 @@
                     cellDiv.classList.remove('flash-cell');
                     cellDiv.parentElement.classList.remove('bg-yellow-50');
                 });
+                // Clear YoY cell
+                const yoyDiv = document.getElementById(`cell-${rowIndex}-YoY`);
+                if (yoyDiv) {
+                    yoyDiv.innerHTML = '';
+                    yoyDiv.classList.remove('flash-cell');
+                    yoyDiv.parentElement.classList.remove('bg-yellow-50');
+                }
                 
                 // Uncheck and reset row UI
                 const tr = tbody.children[rowIndex];
@@ -426,11 +858,27 @@
             });
 
             selectedRows.clear();
-            
+            currentWorkflowId = null;
+            receivedMetricCount = 0;
+
+            // Reset select-all checkbox
+            const selectAllChk = document.getElementById('select-all-chk');
+            selectAllChk.checked = false;
+            selectAllChk.indeterminate = false;
+
+            // Re-enable select-all
+            document.getElementById('select-all-chk').disabled = false;
+
+            // Clear log
+            analysisLog = [];
+            const content = document.getElementById('log-content');
+            content.innerHTML = '<div class="text-gray-600 italic text-xs" id="log-empty">No analysis running. Select metrics and run an analysis to see logs here.</div>';
+            updateLogCount();
+
             // Reset UI components
-            sourceSelect.value = "";
-            sourceSelect.disabled = false;
-            
+            companySelect.value = "";
+            companySelect.disabled = false;
+
             summaryDiv.classList.add('hidden');
             summaryPlaceholder.classList.remove('hidden');
             
@@ -447,8 +895,134 @@
             sidebar.classList.toggle('sidebar-closed');
         }
 
+        function toggleLogPanel() {
+            logPanelOpen = !logPanelOpen;
+            const panel = document.getElementById('log-panel');
+            if (logPanelOpen) {
+                panel.classList.remove('log-panel-closed');
+            } else {
+                panel.classList.add('log-panel-closed');
+            }
+        }
+
+        function addLogEntry(type, message) {
+            const now = new Date();
+            const ts = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}:${String(now.getSeconds()).padStart(2,'0')}`;
+            const entry = { ts, type, message };
+
+            // Deduplicate: skip exact repeats of the last entry
+            if (analysisLog.length > 0) {
+                const last = analysisLog[analysisLog.length - 1];
+                if (last.type === type && last.message === message) return;
+            }
+            analysisLog.push(entry);
+
+            // Auto-open log panel on first log entry
+            if (!logPanelOpen && analysisLog.length === 1) {
+                toggleLogPanel();
+            }
+
+            renderLogEntry(entry);
+            updateLogCount();
+        }
+
+        function renderLogEntry(entry) {
+            const content = document.getElementById('log-content');
+            const emptyMsg = document.getElementById('log-empty');
+            if (emptyMsg) emptyMsg.remove();
+
+            const div = document.createElement('div');
+            div.className = `log-entry ${entry.type}`;
+            div.innerHTML = `<span class="ts">[${entry.ts}]</span> ${escapeHtml(entry.message)}`;
+            content.appendChild(div);
+            content.scrollTop = content.scrollHeight;
+        }
+
+        function clearLog() {
+            analysisLog = [];
+            const content = document.getElementById('log-content');
+            content.innerHTML = '<div class="text-gray-600 italic text-xs" id="log-empty">Log cleared.</div>';
+            updateLogCount();
+        }
+
+        function updateLogCount() {
+            document.getElementById('log-count').innerText = analysisLog.length;
+        }
+
+        function escapeHtml(str) {
+            const d = document.createElement('div');
+            d.textContent = str;
+            return d.innerHTML;
+        }
+
+        function toggleSelectAll() {
+            if (currentState !== 'SELECTION') return;
+            const chk = document.getElementById('select-all-chk');
+            const selectAll = chk.checked;
+
+            if (selectAll) {
+                // Select all rows
+                for (let i = 0; i < indicators.length; i++) {
+                    if (!selectedRows.has(i)) {
+                        selectedRows.add(i);
+                        document.getElementById(`chk-${i}`).checked = true;
+                        tbody.children[i].classList.add('row-selected');
+                    }
+                }
+            } else {
+                // Deselect all rows
+                for (let i = 0; i < indicators.length; i++) {
+                    if (selectedRows.has(i)) {
+                        selectedRows.delete(i);
+                        document.getElementById(`chk-${i}`).checked = false;
+                        tbody.children[i].classList.remove('row-selected');
+                    }
+                }
+            }
+            updateButtonState();
+        }
+
+        function updateSelectAllState() {
+            const chk = document.getElementById('select-all-chk');
+            if (selectedRows.size === 0) {
+                chk.checked = false;
+                chk.indeterminate = false;
+            } else if (selectedRows.size === indicators.length) {
+                chk.checked = true;
+                chk.indeterminate = false;
+            } else {
+                chk.checked = false;
+                chk.indeterminate = true;
+            }
+        }
+
+        async function loadCompanies() {
+            // Always add TEST (Mock) option
+            companySelect.innerHTML = '<option value="" disabled selected>Select company</option>';
+            const mockOpt = document.createElement('option');
+            mockOpt.value = 'TEST (Mock)';
+            mockOpt.textContent = 'TEST (Mock)';
+            companySelect.appendChild(mockOpt);
+
+            try {
+                const resp = await fetch(`${BACKEND_URL}/api/companies`);
+                if (!resp.ok) return;
+                const companies = await resp.json();
+                companies.forEach(c => {
+                    const opt = document.createElement('option');
+                    opt.value = c;
+                    opt.textContent = c;
+                    companySelect.appendChild(opt);
+                });
+            } catch (e) {
+                // Non-critical — TEST (Mock) is already available
+            }
+        }
+
         // Boot
         initTable();
+        loadCompanies();
+        loadHistory();
     </script>
 </body>
 </html>

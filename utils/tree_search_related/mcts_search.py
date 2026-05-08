@@ -20,7 +20,7 @@ from utils.tree_search_related.pdf_json_prompt import (
 from utils.tree_search_related.tree_node import TreeNode, collect_leaves
 
 
-def _load_forest_from_db(doc_pk: int, db_path: str = "tree_poc.db") -> List[TreeNode]:
+def _load_forest_from_db(doc_pk: int, db_path: str = "static/tree_poc.db") -> List[TreeNode]:
     """Load all root nodes for a document from the SQLite database."""
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
@@ -75,12 +75,19 @@ def _load_forest_from_db(doc_pk: int, db_path: str = "tree_poc.db") -> List[Tree
 
 
 class MCTSQuery:
-    """Run forest-aware MCTS over a stored document tree to answer one question."""
+    """Run forest-aware MCTS over a stored document tree to answer one question.
+
+    Can be initialized with a direct ``doc_pk`` or with ``company`` and
+    ``year_period`` to look up the document automatically.
+    """
 
     def __init__(
         self,
-        doc_pk: int,
-        db_path: str = "tree_poc.db",
+        doc_pk: int | None = None,
+        db_path: str = "static/tree_poc.db",
+        *,
+        company: str | None = None,
+        year_period: str | None = None,
         num_iterations: int = 10,
         top_k: int = 3,
         exploration_weight: float = 1.414,
@@ -101,6 +108,16 @@ class MCTSQuery:
             raise ValueError("max_workers must be greater than 0")
         if virtual_visits <= 0:
             raise ValueError("virtual_visits must be greater than 0")
+
+        # Resolve doc_pk: explicit arg takes priority, otherwise lookup by company/year
+        if doc_pk is None:
+            if company is None or year_period is None:
+                raise ValueError(
+                    "Either doc_pk or both company and year_period must be provided"
+                )
+            from utils.database.db_manager import get_doc_by_company_year
+            doc = get_doc_by_company_year(company, year_period, db_path=db_path)
+            doc_pk = doc["doc_pk"]
 
         self.doc_pk = doc_pk
         self.db_path = db_path

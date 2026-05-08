@@ -1,4 +1,4 @@
-# Input: Local PDF path, extraction model name, and runtime pipeline controls (TOC-first strategy, chunking, concurrency, retries, persistence flags).
+# Input: Local PDF path, extraction model name, runtime pipeline controls (TOC-first strategy, chunking, concurrency, retries, persistence flags), and batched summary generation via call_chat_completions_batch.
 # Output: Processed JSON extraction result with hierarchical tree structure, timing/token statistics, and optional persisted JSON file.
 # Position: Core PDF→JSON extraction pipeline orchestrator using multi-pass TOC-first hierarchical extraction. If modified, update this header and the parent folder's .md index.
 
@@ -12,11 +12,10 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from pypdf import PdfReader
-from concurrent.futures import ThreadPoolExecutor, as_completed
-
 from utils.azure_openai.azure_openai import (
     ChatCompletionRequest,
     call_chat_completion,
+    call_chat_completions_batch,
 )
 from utils.tree_search_related.pdf_json_prompt import (
     build_toc_detection_prompt,
@@ -872,19 +871,15 @@ def subdivide_large_nodes(
 
 # ── Summary Generation ───────────────────────────────────────────────────
 
-def _generate_node_summary(node_text: str, verbose: bool = True) -> str:
-    prompt = build_summary_prompt(node_text)
-    try:
-        content, _, _ = call_llm_raw(prompt=prompt, verbose=verbose)
-        return content.strip()
-    except Exception:
-        return ""
-
-
 def generate_summaries(
     tree: List[Dict[str, Any]], max_workers: int = 4, verbose: bool = True
 ) -> None:
-    """Generate summaries for all nodes in the tree (in-place)."""
+    """Generate summaries for all nodes in the tree (in-place) using batched LLM calls.
+
+    Uses ``call_chat_completions_batch`` — the same concurrent transport as MCTS
+    frontier-batched leaf evaluation.  Summary generation has no shared mutable
+    state, so it is embarrassingly parallel and safe to batch.
+    """
     all_nodes: List[Dict[str, Any]] = []
 
     def _collect(nodes: List[Dict[str, Any]]) -> None:
@@ -895,18 +890,49 @@ def generate_summaries(
 
     _collect(tree)
 
+    nodes_with_text = [
+        (index, node)
+        for index, node in enumerate(all_nodes)
+        if node.get("text", "").strip()
+    ]
+
+    if not nodes_with_text:
+        return
+
     if verbose:
-        print(f"      Generating summaries for {len(all_nodes)} node(s)")
+        print(
+            f"      Generating summaries for {len(nodes_with_text)} node(s) "
+            f"(max_workers={max_workers})"
+        )
 
-    def _summarize(node: Dict[str, Any]) -> None:
-        text = node.get("text", "")
-        if text:
-            node["summary"] = _generate_node_summary(text, verbose=verbose)
+    requests = [
+        ChatCompletionRequest(
+            prompt=build_summary_prompt(node["text"]),
+            temperature=0.0,
+        )
+        for _, node in nodes_with_text
+    ]
 
-    with ThreadPoolExecutor(max_workers=max(1, max_workers)) as executor:
-        futures = {executor.submit(_summarize, n): n for n in all_nodes}
-        for future in as_completed(futures):
-            future.result()
+    results = call_chat_completions_batch(
+        requests,
+        max_workers=max_workers,
+        verbose=verbose,
+    )
+
+    if len(results) != len(requests):
+        raise ValueError(
+            f"Summary batch result count mismatch: "
+            f"expected {len(requests)}, got {len(results)}"
+        )
+
+    for result_index, (node_index, node) in enumerate(nodes_with_text):
+        result = results[result_index]
+        if result.request_index != result_index:
+            raise ValueError(
+                f"Summary batch result order mismatch: "
+                f"expected request_index={result_index}, got {result.request_index}"
+            )
+        node["summary"] = result.content.strip()
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -950,14 +976,16 @@ def run_pdf_json_pipeline(
     pdf_path: str,
     *,
     model: str,
+    company: str | None = None,
+    year_period: str | None = None,
     persist: bool = False,
     output_dir: str = "static",
     chunk_pages: int = 6,
     max_retries: int = 3,
     temperature: float = 0.0,
-    max_workers: int = 1,
+    max_workers: int = 4,
     store_to_db: bool = False,
-    db_path: str = "tree_poc.db",
+    db_path: str = "static/tree_poc.db",
     verbose: bool = True,
     # New TOC-first parameters
     toc_check_pages: int = 20,
@@ -1058,7 +1086,10 @@ def run_pdf_json_pipeline(
         from utils.database.db_manager import load_json_to_db
         if verbose:
             print(f"[DB] Storing results to database: {db_path}")
-        db_result = load_json_to_db(processed, db_path=db_path, verbose=verbose)
+        db_result = load_json_to_db(
+            processed, db_path=db_path, verbose=verbose,
+            company=company, year_period=year_period,
+        )
         processed["db_doc_pk"] = db_result["doc_pk"]
         processed["db_node_count"] = db_result["node_count"]
 
