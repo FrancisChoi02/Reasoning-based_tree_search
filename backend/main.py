@@ -10,6 +10,7 @@ import json
 import math
 import os
 import random
+import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -24,6 +25,7 @@ from pydantic import BaseModel, Field
 
 from backend.mcts_search_factory import make_mcts_search_fn
 from backend.tree_verifier import verify_trees_for_years
+from utils.azure_openai.azure_openai import get_chat_deployment_name, read_token_counter, reset_token_counter
 from utils.database.db_manager import (
     get_workflow,
     init_db,
@@ -54,6 +56,7 @@ app.add_middleware(
 DB_PATH = os.getenv("TREE_DB_PATH", "static/tree_poc.db")
 YAML_PATH = os.getenv("METRIC_DEFINITIONS_YAML", "metric_definitions.yaml")
 DEFAULT_MODEL = os.getenv("AZURE_OPENAI_MODEL", "gpt-4o")
+_SLASH_WS = re.compile(r'\s*/\s*')
 
 
 # ---------------------------------------------------------------------------
@@ -80,6 +83,12 @@ class SpreadRequest(BaseModel):
         ..., min_length=2, description="Metrics selected from the frontend SCT table"
     )
     data_source: str = Field(default="Internal Model", description="Selected data source name")
+    max_workers: int = Field(
+        default=1,
+        ge=1,
+        le=10,
+        description="Max concurrent LLM calls per MCTS batch. 1=safe under 1M TPM with 5 years."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -110,6 +119,9 @@ def _normalize(name: str) -> str:
     """Normalize a metric name for fuzzy matching: lowercase, strip punctuation suffixes."""
     cleaned = name.strip().lower()
     cleaned = cleaned.replace("(loss)", "").replace("(x)", "").strip()
+    # Normalize whitespace around slashes so "TFD/EBITDA" / "TFD / EBITDA" / "TFD/ EBITDA"
+    # all map to the same key.  Preserves compound parentheticals like "(TFD/TNW)".
+    cleaned = _SLASH_WS.sub(' / ', cleaned)
     return cleaned
 
 
@@ -215,14 +227,19 @@ async def financial_spreading_for_SCT_table(request: SpreadRequest) -> Streaming
 
     workflow_id = None
     accumulated_sct: dict[str, Any] = {}
+    event_count = 0
 
     def on_metric_resolved(metric, year: str):
+        nonlocal event_count
+        event_count += 1
         mapped_index = _lookup_row_index(metric.canonical_name, request.metrics, name_map)
         event = metric.as_sse_event(row_index=mapped_index, year=year)
         asyncio.run_coroutine_threadsafe(queue.put(event), loop)
 
     def run_workflow():
-        nonlocal workflow_id, accumulated_sct
+        nonlocal workflow_id, accumulated_sct, event_count
+        reset_token_counter()
+        wf_started = time.perf_counter()
 
         # Determine if this is a full-table or partial-metric request
         with open(YAML_PATH, encoding="utf-8") as fh:
@@ -265,6 +282,8 @@ async def financial_spreading_for_SCT_table(request: SpreadRequest) -> Streaming
                 year_period=year,
                 db_path=DB_PATH,
                 per_call_instance=not is_full_table,
+                max_workers=request.max_workers,
+                verbose=True,
             )
             workflow = FinancialSpreadingWorkflow(
                 yaml_path=YAML_PATH,
@@ -298,17 +317,39 @@ async def financial_spreading_for_SCT_table(request: SpreadRequest) -> Streaming
 
             # YoY computation after all years complete
             if len(raw_sct_by_year) >= 2:
-                sorted_years = sorted(raw_sct_by_year.keys())
-                yoy_events = compute_yoy(raw_sct_by_year, sorted_years)
-                for yoy_event in yoy_events:
-                    mapped_index = _lookup_row_index(
-                        yoy_event["canonical_name"], request.metrics, name_map
+                try:
+                    sorted_years = sorted(raw_sct_by_year.keys())
+                    all_yoy_events = compute_yoy(raw_sct_by_year, sorted_years)
+                    # Only emit the latest year pair's YoY — the frontend has a single
+                    # "YoY Change" column, matching the mock endpoint behaviour.
+                    latest_year = sorted_years[-1]
+                    latest_yoy_label = f"{latest_year}_YoY"
+                    yoy_events = [e for e in all_yoy_events if e["year"] == latest_yoy_label]
+                    accumulated_yoy: dict[str, dict[str, Any]] = {}
+                    for yoy_event in yoy_events:
+                        mapped_index = _lookup_row_index(
+                            yoy_event["canonical_name"], request.metrics, name_map
+                        )
+                        yoy_event["row_index"] = mapped_index
+                        asyncio.run_coroutine_threadsafe(
+                            queue.put(f"data: {json.dumps(yoy_event, ensure_ascii=False)}\n\n"),
+                            loop,
+                        )
+                        # Persist YoY keyed by canonical_name for history restore
+                        if mapped_index is not None:
+                            accumulated_yoy[yoy_event["canonical_name"]] = {
+                                "value": yoy_event["value"],
+                                "status": yoy_event["status"],
+                                "formula_used": yoy_event.get("formula"),
+                                "component_details": yoy_event.get("component_details"),
+                            }
+                    if accumulated_yoy:
+                        accumulated_sct["_yoy"] = accumulated_yoy
+                except Exception as exc:
+                    error_event = (
+                        f"data: {json.dumps({'event': 'year_error', 'year': 'YoY', 'message': f'YoY computation failed: {exc}'})}\n\n"
                     )
-                    yoy_event["row_index"] = mapped_index
-                    asyncio.run_coroutine_threadsafe(
-                        queue.put(f"data: {json.dumps(yoy_event, ensure_ascii=False)}\n\n"),
-                        loop,
-                    )
+                    asyncio.run_coroutine_threadsafe(queue.put(error_event), loop)
 
             # Serialize for DB storage
             for year, sct in raw_sct_by_year.items():
@@ -316,17 +357,26 @@ async def financial_spreading_for_SCT_table(request: SpreadRequest) -> Streaming
 
             # Persist workflow to DB for history
             if accumulated_sct:
+                wf_elapsed = round(time.perf_counter() - wf_started, 2)
+                wf_tokens = read_token_counter()
+                model_name = get_chat_deployment_name()
                 workflow_id = save_workflow(
                     company_name=request.company_name,
                     data_source=request.data_source,
                     year_periods=year_periods,
                     sct_data=accumulated_sct,
                     db_path=DB_PATH,
+                    elapsed_seconds=wf_elapsed,
+                    event_count=event_count,
+                    token_count=wf_tokens,
+                    model_name=model_name,
                 )
         finally:
             asyncio.run_coroutine_threadsafe(queue.put(None), loop)
 
     async def event_generator():
+        workflow_started = time.perf_counter()
+
         # 1. Tree verification event
         yield f"data: {json.dumps({'event': 'tree_verification', 'results': verification})}\n\n"
 
@@ -341,8 +391,15 @@ async def financial_spreading_for_SCT_table(request: SpreadRequest) -> Streaming
                 break
             yield item
 
-        # 4. Completion event (includes workflow_id for history lookup)
-        complete_payload: dict[str, Any] = {"event": "complete"}
+        # 4. Completion event (includes workflow_id + timing + event + token count + model name)
+        elapsed = round(time.perf_counter() - workflow_started, 2)
+        complete_payload: dict[str, Any] = {
+            "event": "complete",
+            "elapsed_seconds": elapsed,
+            "event_count": event_count,
+            "token_count": read_token_counter(),
+            "model_name": get_chat_deployment_name(),
+        }
         if workflow_id is not None:
             complete_payload["workflow_id"] = workflow_id
         yield f"data: {json.dumps(complete_payload)}\n\n"
@@ -395,6 +452,7 @@ class MockSpreadRequest(BaseModel):
     year_periods: list[str] = Field(default=["2021", "2022", "2023", "2024", "2025"])
     metrics: list[SpreadMetricItem] = Field(..., min_length=2)
     data_source: str = "TEST"
+    max_workers: int = Field(default=1, ge=1, le=10, description="Max concurrent LLM calls per MCTS batch")
 
 
 @app.post("/api/mock/spread")
@@ -402,6 +460,8 @@ async def mock_spread(request: MockSpreadRequest) -> StreamingResponse:
     """Stream mock SSE events simulating real-time metric calculation at high speed."""
 
     async def event_generator():
+        mock_started = time.perf_counter()
+
         # 1. Tree verification (all OK for mock)
         yield f"data: {json.dumps({'event': 'tree_verification', 'results': {yr: {'status': 'ok', 'doc_pk': 0, 'total_nodes': 99, 'total_leaves': 40, 'leaves_with_text': 35, 'issues': []} for yr in request.year_periods}})}\n\n"
 
@@ -486,7 +546,8 @@ async def mock_spread(request: MockSpreadRequest) -> StreamingResponse:
             yield f"data: {json.dumps(yoy_payload)}\n\n"
 
         # 2. Complete
-        yield f"data: {json.dumps({'event': 'complete'})}\n\n"
+        elapsed = round(time.perf_counter() - mock_started, 2)
+        yield f"data: {json.dumps({'event': 'complete', 'elapsed_seconds': elapsed})}\n\n"
 
     return StreamingResponse(
         event_generator(),

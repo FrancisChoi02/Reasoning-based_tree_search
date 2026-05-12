@@ -4,6 +4,7 @@
 
 import json
 import sqlite3
+import time
 from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 from utils.azure_openai.azure_openai import (
@@ -140,29 +141,70 @@ class MCTSQuery:
         if not normalized_query:
             raise ValueError("query must not be empty")
 
+        search_start = time.monotonic()
+
+        if self.verbose:
+            leaf_count = sum(1 for n in self._all_nodes if n.is_leaf)
+            print(f"\n{'─' * 60}")
+            print(f"[MCTS] search start  query={normalized_query!r}")
+            print(f"[MCTS] forest: {len(self.roots)} root(s), {len(self._all_nodes)} nodes, {leaf_count} leaves")
+            print(f"[MCTS] config: iterations={self.num_iterations} top_k={self.top_k} max_workers={self.max_workers} exploration_weight={self.exploration_weight} virtual_visits={self.virtual_visits}")
+
         self._reset_tree_state()
+
+        seed_start = time.monotonic()
         self._seed_priors_for_roots(normalized_query)
+        if self.verbose:
+            print(f"[MCTS] prior seeding done in {time.monotonic() - seed_start:.2f}s")
 
         completed_iterations = 0
+        batch_num = 0
         while completed_iterations < self.num_iterations:
+            batch_num += 1
+            remaining = self.num_iterations - completed_iterations
+            batch_start = time.monotonic()
+
+            if self.verbose:
+                batch_size = min(self.max_workers, remaining)
+                print(f"\n[MCTS] ── batch {batch_num}  target_size={batch_size}  progress={completed_iterations}/{self.num_iterations} ──")
+
             frontier_batch = self._select_frontier_batch(
                 normalized_query,
-                remaining_iterations=self.num_iterations - completed_iterations,
+                remaining_iterations=remaining,
             )
+
+            if self.verbose:
+                for i, leaf in enumerate(frontier_batch):
+                    print(f"[MCTS]   select #{i+1}: path={self._node_path_text(leaf)}  pages={self._format_pages(leaf)}  visits={leaf.visit_count}  value={leaf.value:.3f}")
+
             scored_leaves = self._evaluate_frontier_batch(frontier_batch, normalized_query)
             self._commit_frontier_batch(scored_leaves)
             completed_iterations += len(scored_leaves)
 
             if self.verbose:
-                batch_titles = [leaf.title for leaf, _ in scored_leaves]
-                print(
-                    f"[MCTS] batch_complete iterations={completed_iterations}/{self.num_iterations} "
-                    f"batch_size={len(scored_leaves)} leaves={batch_titles}"
-                )
+                batch_elapsed = time.monotonic() - batch_start
+                names = [leaf.title for leaf, _ in scored_leaves]
+                scores = [f"{score:.3f}" for _, score in scored_leaves]
+                print(f"[MCTS]   batch done in {batch_elapsed:.2f}s  leaves={names}  scores={scores}  progress={completed_iterations}/{self.num_iterations}")
+
+        if self.verbose:
+            synth_start = time.monotonic()
 
         top_leaves = self._collect_top_k_leaves()
         answer = self._synthesize_answer(normalized_query, top_leaves)
+
+        if self.verbose:
+            print(f"[MCTS] synthesis done in {time.monotonic() - synth_start:.2f}s")
+
         sources = [self._build_source_payload(leaf) for leaf in top_leaves]
+
+        if self.verbose:
+            total_elapsed = time.monotonic() - search_start
+            print(f"\n[MCTS] search complete  total={total_elapsed:.2f}s  leaves_visited={len(self._visited_leaf_keys)}  answer_length={len(answer)}")
+            print(f"[MCTS] top-{self.top_k} leaves:")
+            for i, leaf in enumerate(top_leaves):
+                print(f"[MCTS]   #{i+1}: {leaf.title!r}  value={leaf.value:.3f}  visits={leaf.visit_count}  pages={self._format_pages(leaf)}")
+            print(f"{'─' * 60}")
 
         return {
             "query": normalized_query,
@@ -195,7 +237,11 @@ class MCTSQuery:
             root = self.roots[0]
             root.visit_count = self.virtual_visits
             root.value_sum = float(self.virtual_visits)
+            if self.verbose:
+                print(f"[MCTS] single root — skipping prior scoring, root={root.title!r} virtual_visits={self.virtual_visits}")
             return
+        if self.verbose:
+            print(f"[MCTS] multi-root forest ({len(self.roots)} roots) — seeding priors via LLM scoring")
         self._seed_children(query, self.roots, parent_key="__forest__")
 
     def _select_leaf(self, query: str, reserved_leaf_keys: Optional[Set[str]] = None) -> Optional[TreeNode]:
@@ -276,6 +322,10 @@ class MCTSQuery:
         if not children:
             raise ValueError(f"Cannot seed empty child list for parent_key={parent_key}")
 
+        if self.verbose:
+            names = [c.title for c in children]
+            print(f"[MCTS]   seeding parent_key={parent_key}  children={len(children)}  names={names}")
+
         sibling_payload = [
             {
                 "title": child.title,
@@ -285,6 +335,8 @@ class MCTSQuery:
             for child in children
         ]
         prompt = build_prior_scoring_prompt(query, sibling_payload)
+
+        seed_call_start = time.monotonic()
         response = call_chat_completion(
             ChatCompletionRequest(prompt=prompt, temperature=0.0),
             request_index=0,
@@ -298,6 +350,10 @@ class MCTSQuery:
             child.value_sum += prior_score * self.virtual_visits
 
         self._seeded_parent_keys.add(parent_key)
+
+        if self.verbose:
+            score_summary = {c.title: f"{self._clamp_score(raw_scores.get(c.title, 0.0)):.3f}" for c in children}
+            print(f"[MCTS]   seeded in {time.monotonic() - seed_call_start:.2f}s  scores={score_summary}")
 
     def _evaluate_leaf(self, leaf: TreeNode, query: str) -> float:
         request = self._build_leaf_eval_request(leaf, query)
@@ -317,11 +373,20 @@ class MCTSQuery:
             return []
 
         requests = [self._build_leaf_eval_request(leaf, query) for leaf in leaves]
+
+        if self.verbose:
+            eval_start = time.monotonic()
+            print(f"[MCTS]   evaluating {len(leaves)} leaf(ves) via batch LLM call (max_workers={min(self.max_workers, len(requests))})")
+
         results = call_chat_completions_batch(
             requests,
             max_workers=min(self.max_workers, len(requests)),
             verbose=self.verbose,
         )
+
+        if self.verbose:
+            print(f"[MCTS]   batch LLM call done in {time.monotonic() - eval_start:.2f}s")
+
         if len(results) != len(leaves):
             raise ValueError(
                 f"Frontier batch result count mismatch: expected {len(leaves)}, got {len(results)}"

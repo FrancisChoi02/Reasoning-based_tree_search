@@ -179,6 +179,24 @@ class FinancialSpreadingWorkflow:
         # that depend on them (Net Worth, Tangible Net Worth, etc.) can resolve.
         self._resolve_aggregations()
 
+        # Phase 2b: fallback MCTS search for aggregation totals that still have
+        # no value (all sub-items missed).  Aggregations are not in self._definitions
+        # so Phase 5 won't cover them — we must handle them explicitly here.
+        for agg_name, agg_data in self.aggregations.items():
+            agg_metric = self._resolved.get(agg_name)
+            if agg_metric is not None and agg_metric.value is not None:
+                continue
+            synonyms = agg_data.get("synonyms", [agg_name])
+            mdef = MetricDefinition(
+                canonical_name=agg_name,
+                input_type="direct",
+                metric_type="absolute",
+                statement_type=agg_data.get("statement_type", "Balance Sheet"),
+                is_mentioned=agg_data.get("is_mentioned", False),
+                synonyms=list(synonyms),
+            )
+            self._resolve_fallback(mdef, precision)
+
         # Phase 3: derived_else_direct — try direct first, then derived
         for mdef in ordered:
             if mdef.input_type == "derived_else_direct":
@@ -251,6 +269,22 @@ class FinancialSpreadingWorkflow:
             # Phase 2: aggregation totals
             self._resolve_aggregations()
 
+            # Phase 2b: fallback MCTS for aggregation totals with no value
+            for agg_name, agg_data in self.aggregations.items():
+                agg_metric = self._resolved.get(agg_name)
+                if agg_metric is not None and agg_metric.value is not None:
+                    continue
+                synonyms = agg_data.get("synonyms", [agg_name])
+                mdef = MetricDefinition(
+                    canonical_name=agg_name,
+                    input_type="direct",
+                    metric_type="absolute",
+                    statement_type=agg_data.get("statement_type", "Balance Sheet"),
+                    is_mentioned=agg_data.get("is_mentioned", False),
+                    synonyms=list(synonyms),
+                )
+                self._resolve_fallback(mdef, precision)
+
             # Phase 3: derived_else_direct
             for mdef in ordered:
                 if mdef.input_type == "derived_else_direct":
@@ -306,11 +340,33 @@ class FinancialSpreadingWorkflow:
         if needed_aggs:
             self._resolve_aggregations_subset(needed_aggs)
 
+        # Phase 2b: fallback MCTS for aggregation totals that still have no value
+        for agg_name in needed_aggs:
+            agg_metric = self._resolved.get(agg_name)
+            if agg_metric is not None and agg_metric.value is not None:
+                continue
+            agg_data = self.aggregations[agg_name]
+            synonyms = agg_data.get("synonyms", [agg_name])
+            mdef = MetricDefinition(
+                canonical_name=agg_name,
+                input_type="direct",
+                metric_type="absolute",
+                statement_type=agg_data.get("statement_type", "Balance Sheet"),
+                is_mentioned=agg_data.get("is_mentioned", False),
+                synonyms=list(synonyms),
+            )
+            self._resolve_fallback(mdef, precision)
+
         # Phase 3: concurrent derived_else_direct
         self._resolve_phase_concurrently(ded_defs, precision, max_workers=3)
 
-        # Phase 4: concurrent derived (reads from now-populated _resolved under lock)
-        self._resolve_phase_concurrently(derived_defs, precision, max_workers=3)
+        # Phase 4: derived — must be sequential and in topological order because
+        # later metrics depend on earlier ones (e.g. Net Funded Debt depends on
+        # Total Ext. Funded Debt). Pure derived metrics only evaluate formulas,
+        # so concurrency provides no speed benefit and breaks correctness.
+        derived_ordered = self._topological_sort(derived_defs)
+        for mdef in derived_ordered:
+            self._resolve_and_store(mdef, precision)
 
         # Phase 5: fallback for any still unresolved
         name_to_def = {d.canonical_name: d for d in self._definitions}
@@ -320,6 +376,22 @@ class FinancialSpreadingWorkflow:
                 mdef = name_to_def.get(name)
                 if mdef is not None:
                     self._resolve_fallback(mdef, precision)
+
+        # Phase 5b: retry any partial derived metrics whose dependencies may
+        # have been resolved by the Phase 5 fallback (or a now-complete
+        # aggregation).  Re-run the formula with the updated _resolved dict.
+        partial_derived = {}
+        for name in needed:
+            m = self._resolved.get(name)
+            if m is not None and m.status == "partial" and m.resolution_method == "derived":
+                mdef = name_to_def.get(name)
+                if mdef is not None:
+                    partial_derived[name] = mdef
+        if partial_derived:
+            # Re-sort so dependencies resolve before dependents
+            partial_ordered = self._topological_sort(list(partial_derived.values()))
+            for mdef in partial_ordered:
+                self._resolve_and_store(mdef, precision)
 
         return self._assemble_sct_table(only_names=needed)
 
@@ -563,7 +635,8 @@ class FinancialSpreadingWorkflow:
                         )
                     )
 
-            status = "resolved" if all_resolved else "partial"
+            resolved_count = sum(1 for cd in comp_details if cd.value is not None)
+            status = "resolved" if all_resolved else ("partial" if resolved_count > 0 else "unresolved")
             formula_parts = []
             for comp in agg_data.get("components", []):
                 sign_str = "+" if comp.get("sign", 1) >= 0 else "-"
@@ -582,10 +655,11 @@ class FinancialSpreadingWorkflow:
                 synonyms=list(synonyms),
             )
 
+            # Partial sums flow through: unresolved sub-items are ignored (treated as 0).
             metric = Metric(
                 canonical_name=agg_name,
                 definition=mdef,
-                value=total if all_resolved else None,
+                value=total if resolved_count > 0 else None,
                 status=status,
                 resolution_method="derived",
                 formula_used=formula,
@@ -594,13 +668,13 @@ class FinancialSpreadingWorkflow:
                     input_type="derived",
                     resolution_method="derived",
                     success=all_resolved,
-                    result=total if all_resolved else None,
+                    result=total if resolved_count > 0 else None,
                     formula=formula,
                     component_details=comp_details,
                     status_note=(
                         "Successfully calculated."
                         if all_resolved
-                        else "Some sub-items unresolved."
+                        else f"{resolved_count}/{len(comp_details)} sub-items resolved. Unresolved items treated as 0."
                     ),
                 ),
             )
@@ -975,7 +1049,8 @@ class FinancialSpreadingWorkflow:
                         )
                     )
 
-            status = "resolved" if all_resolved else "partial"
+            resolved_count = sum(1 for cd in comp_details if cd.value is not None)
+            status = "resolved" if all_resolved else ("partial" if resolved_count > 0 else "unresolved")
             formula_parts = []
             for comp in agg_data.get("components", []):
                 sign_str = "+" if comp.get("sign", 1) >= 0 else "-"
@@ -994,10 +1069,13 @@ class FinancialSpreadingWorkflow:
                 synonyms=list(synonyms),
             )
 
+            # Partial sums flow through: unresolved sub-items are ignored (treated as 0).
+            # Status is "resolved" only when every sub-item resolved, "partial" when
+            # at least one resolved, "unresolved" when none resolved at all.
             metric = Metric(
                 canonical_name=agg_name,
                 definition=mdef,
-                value=total if all_resolved else None,
+                value=total if resolved_count > 0 else None,
                 status=status,
                 resolution_method="derived",
                 formula_used=formula,
@@ -1006,13 +1084,13 @@ class FinancialSpreadingWorkflow:
                     input_type="derived",
                     resolution_method="derived",
                     success=all_resolved,
-                    result=total if all_resolved else None,
+                    result=total if resolved_count > 0 else None,
                     formula=formula,
                     component_details=comp_details,
                     status_note=(
                         "Successfully calculated."
                         if all_resolved
-                        else "Some sub-items unresolved."
+                        else f"{resolved_count}/{len(comp_details)} sub-items resolved. Unresolved items treated as 0."
                     ),
                 ),
             )

@@ -19,10 +19,7 @@ Usage:
       --db-path static/tree_poc.db                                                               
                                                                                                  
   # Partial metrics with concurrent within-year + cross-year                                     
-  python test_mcts_search.py workflow \                                                          
-      --company "Unilever" \                                                                     
-      --metrics "Revenue,EBITDA,Gross Profit" \                                                  
-      --db-path static/tree_poc.db                                                               
+  python test_mcts_search.py workflow --company "Unilever" --metrics "Revenue,EBITDA" --db-path static/tree_poc.db                                                               
                                                                                                  
   # Partial with custom year range                                                               
   python test_mcts_search.py workflow \                                                          
@@ -32,10 +29,7 @@ Usage:
       --db-path static/tree_poc.db                                                               
                                                                                                  
   # Original MCTS mode (unchanged)                                                               
-  python test_mcts_search.py mcts \                                                              
-      --db-path verify_test.db --doc-pk 1 \                                                      
-      --query "What was Unilever's revenue in 2022?" \                                           
-      --iterations 10                          
+  python test_mcts_search.py mcts --db-path verify_test.db --doc-pk 1 --query "What was Unilever's revenue in 2022?" --iterations 10                          
 """
 
 from __future__ import annotations

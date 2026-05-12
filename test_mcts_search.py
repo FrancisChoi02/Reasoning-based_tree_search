@@ -170,6 +170,11 @@ def _add_workflow_args(parser: argparse.ArgumentParser) -> None:
         help="Send request to a running backend at this URL (e.g. http://localhost:8000) "
              "instead of running the workflow directly in-process",
     )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Print detailed MCTS search progress (forest stats, seeding, per-batch timing)",
+    )
 
 
 def parse_args() -> argparse.Namespace:
@@ -527,6 +532,7 @@ def _build_search_fn_for_year(
     per_call_instance: bool,
     max_workers: int,
     iterations: int,
+    verbose: bool = False,
 ):
     return make_mcts_search_fn(
         company=company,
@@ -535,6 +541,7 @@ def _build_search_fn_for_year(
         per_call_instance=per_call_instance,
         max_workers=max_workers,
         num_iterations=iterations,
+        verbose=verbose,
     )
 
 
@@ -598,6 +605,7 @@ def run_workflow_direct(args: argparse.Namespace) -> int:
             per_call_instance=not is_full_table,
             max_workers=args.max_workers,
             iterations=args.iterations,
+            verbose=args.verbose,
         )
 
         workflow = FinancialSpreadingWorkflow(
@@ -697,6 +705,13 @@ Sample commands
       --full-table \\
       --db-path static/tree_poc.db
 
+  # Full SCT table with verbose MCTS search logging
+  python test_mcts_search.py workflow \\
+      --company "Unilever" \\
+      --full-table \\
+      --db-path static/tree_poc.db \\
+      --verbose
+
   # Partial metrics via HTTP backend (hits localhost:8000)
   python test_mcts_search.py workflow \\
       --company "Unilever" \\
@@ -720,7 +735,8 @@ Sample commands
   python test_mcts_search.py workflow \\
       --company "Unilever" \\
       --metrics "Revenue" --years "2021" \\
-      --iterations 3
+      --iterations 3 \\
+      --verbose
 
   # Original MCTS mode (unchanged)
   python test_mcts_search.py mcts \\

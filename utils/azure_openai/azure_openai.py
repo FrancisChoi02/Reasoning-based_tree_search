@@ -4,6 +4,7 @@
 
 import os
 import random
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -20,6 +21,30 @@ DEFAULT_CHAT_MAX_RETRIES = 3
 DEFAULT_CHAT_MAX_WORKERS = 4
 DEFAULT_CHAT_BACKOFF_BASE_SECONDS = 1.0
 DEFAULT_CHAT_BACKOFF_MAX_SECONDS = 8.0
+
+# Thread-safe accumulator for total token consumption across all LLM calls.
+# Reset before each workflow run; read after completion for the summary footer.
+_token_lock = threading.Lock()
+_token_total = 0
+
+
+def reset_token_counter() -> None:
+    global _token_total
+    with _token_lock:
+        _token_total = 0
+
+
+def read_token_counter() -> int:
+    with _token_lock:
+        return _token_total
+
+
+def _add_tokens(usage: dict) -> None:
+    global _token_total
+    total = usage.get("total_tokens", 0) or 0
+    if total > 0:
+        with _token_lock:
+            _token_total += total
 
 
 @dataclass(frozen=True)
@@ -141,6 +166,7 @@ def call_chat_completion(
     for attempt in range(1, request.max_retries + 1):
         try:
             result = _call_chat_completion_once(request)
+            _add_tokens(result.usage)
             return ChatCompletionResult(
                 content=result.content,
                 usage=result.usage,

@@ -95,12 +95,16 @@ def init_db(db_path: str = "static/tree_poc.db") -> sqlite3.Connection:
     conn.executescript(_SCHEMA_SQL)
 
     # Migration: add columns that may not exist in older databases
-    for col, col_def in [
-        ("company", "TEXT"),
-        ("year_period", "TEXT"),
+    for table, col, col_def in [
+        ("documents", "company", "TEXT"),
+        ("documents", "year_period", "TEXT"),
+        ("workflows", "elapsed_seconds", "REAL"),
+        ("workflows", "event_count", "INTEGER DEFAULT 0"),
+        ("workflows", "token_count", "INTEGER DEFAULT 0"),
+        ("workflows", "model_name", "TEXT"),
     ]:
         try:
-            conn.execute(f"ALTER TABLE documents ADD COLUMN {col} {col_def}")
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_def}")
         except sqlite3.OperationalError:
             pass  # column already exists
 
@@ -332,22 +336,42 @@ def save_workflow(
     year_periods: list[str],
     sct_data: dict[str, Any],
     db_path: str = "static/tree_poc.db",
+    *,
+    elapsed_seconds: float = 0.0,
+    event_count: int = 0,
+    token_count: int = 0,
+    model_name: str | None = None,
 ) -> int:
     """Persist a completed spread workflow and return its workflow_id."""
     conn = init_db(db_path)
     cursor = conn.cursor()
-    metric_count = sum(
-        len(metrics) for metrics in sct_data.values() if isinstance(metrics, list)
-    )
+    # Count unique metric canonical names across all years (metric types, not instances)
+    distinct_names: set[str] = set()
+    for year_sections in sct_data.values():
+        if not isinstance(year_sections, dict):
+            continue
+        for metrics in year_sections.values():
+            if not isinstance(metrics, list):
+                continue
+            for m in metrics:
+                name = m.get("canonical_name") if isinstance(m, dict) else None
+                if name:
+                    distinct_names.add(name)
+    metric_count = len(distinct_names)
     cursor.execute(
-        """INSERT INTO workflows (company_name, data_source, year_periods, sct_data, metric_count)
-           VALUES (?, ?, ?, ?, ?)""",
+        """INSERT INTO workflows (company_name, data_source, year_periods, sct_data, metric_count,
+                                  elapsed_seconds, event_count, token_count, model_name)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             company_name,
             data_source,
             json.dumps(year_periods, ensure_ascii=False),
             json.dumps(sct_data, ensure_ascii=False),
             metric_count,
+            elapsed_seconds,
+            event_count,
+            token_count,
+            model_name,
         ),
     )
     conn.commit()
@@ -366,13 +390,15 @@ def list_workflows(
     cursor = conn.cursor()
     if company_name:
         cursor.execute(
-            """SELECT workflow_id, company_name, data_source, year_periods, metric_count, created_at
+            """SELECT workflow_id, company_name, data_source, model_name, year_periods, metric_count, created_at,
+                      elapsed_seconds, event_count, token_count
                FROM workflows WHERE company_name = ? ORDER BY created_at DESC""",
             (company_name,),
         )
     else:
         cursor.execute(
-            """SELECT workflow_id, company_name, data_source, year_periods, metric_count, created_at
+            """SELECT workflow_id, company_name, data_source, model_name, year_periods, metric_count, created_at,
+                      elapsed_seconds, event_count, token_count
                FROM workflows ORDER BY created_at DESC""",
         )
     rows = cursor.fetchall()

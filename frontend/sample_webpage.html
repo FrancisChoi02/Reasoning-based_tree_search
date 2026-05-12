@@ -9,7 +9,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Financial Spreading SCT</title>
+    <title>Financial Spreading Service</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
         /* Flash animation for incoming data */
@@ -146,7 +146,7 @@
                 <button onclick="toggleSidebar()" class="p-2 hover:bg-gray-100 rounded-md text-gray-600 transition" title="Toggle History Panel">
                     <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"></path></svg>
                 </button>
-                <h1 class="text-xl font-bold text-gray-800 truncate">Financial Spreading SCT</h1>
+                <h1 class="text-xl font-bold text-gray-800 truncate">Financial Spreading Service</h1>
             </div>
 
             <!-- Company Selection (State 1) -->
@@ -156,6 +156,10 @@
                     <select id="company-select" class="font-bold bg-gray-100 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2 cursor-pointer outline-none max-w-[200px]">
                         <option value="" disabled selected>Select company</option>
                     </select>
+                </div>
+                <div class="flex items-center gap-1">
+                    <label for="max-workers-input" class="font-semibold text-gray-700 whitespace-nowrap hidden sm:block text-xs" title="Max concurrent LLM calls per MCTS batch. Lower = safer under TPM limits.">Workers:</label>
+                    <input type="number" id="max-workers-input" value="1" min="1" max="10" class="bg-gray-100 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-16 p-2 outline-none text-center" title="Max concurrent LLM calls per MCTS batch. 1 = safe under 1M TPM with 5 years.">
                 </div>
                 <button onclick="toggleLogPanel()" id="btn-log-toggle" class="p-2 hover:bg-gray-100 rounded-md text-gray-500 transition" title="Toggle Log Panel">
                     <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"></path></svg>
@@ -242,7 +246,7 @@
             { sec: 'Cash Flow', met: 'Financing cashflow' }, { sec: 'Cash Flow', met: 'w/w Dividends' },
             { sec: 'Cash Flow', met: 'Free cashflow' },
             { sec: 'Ratios', met: 'Ext. Gearing (TFD/TNW) (x)' }, { sec: 'Ratios', met: 'NFD / EBITDA (x)' },
-            { sec: 'Ratios', met: 'TFD/ EBITDA (x)' }, { sec: 'Ratios', met: 'NOCF / Interest (x)' },
+            { sec: 'Ratios', met: 'TFD / EBITDA (x)' }, { sec: 'Ratios', met: 'NOCF / Interest (x)' },
             { sec: 'Others', met: 'Capital Expenditure' }
         ];
         const years = ['2021', '2022', '2023', '2024', '2025'];
@@ -367,9 +371,17 @@
 
         function startAnalysis() {
             currentState = 'ANALYSIS';
+            currentWorkflowId = null;
             startTime = Date.now();
             receivedMetricCount = 0;
-            let lastEventTime = Date.now();
+
+            // Reset summary values so stale text from a prior workflow restore
+            // cannot survive into the new analysis output.
+            document.getElementById('sum-time').innerText = '...';
+            document.getElementById('sum-model').innerText = '...';
+            document.getElementById('sum-tokens').innerText = '...';
+            summaryDiv.classList.add('hidden');
+            summaryPlaceholder.classList.remove('hidden');
 
             // Initialize log
             analysisLog = [];
@@ -402,7 +414,8 @@
                 company_name: companySelect.value,
                 year_periods: years,
                 metrics: metricsPayload,
-                data_source: "Internal Model"
+                data_source: "Internal Model",
+                max_workers: parseInt(document.getElementById('max-workers-input').value) || 1
             });
 
             // Connect to backend SSE stream (mock or real)
@@ -423,6 +436,8 @@
             }).then(() => {
                 finishAnalysis();
             }).catch(err => {
+                summaryDiv.classList.add('hidden');
+                summaryPlaceholder.classList.remove('hidden');
                 summaryPlaceholder.innerText = `Connection error: ${err.message}. Check backend.`;
                 btnAction.disabled = false;
                 btnAction.innerText = "Retry";
@@ -440,11 +455,13 @@
 
             while (true) {
                 const { done, value } = await reader.read();
-                if (done) break;
+                if (value) {
+                    buffer += decoder.decode(value, { stream: true });
+                }
 
-                buffer += decoder.decode(value, { stream: true });
                 const lines = buffer.split('\n');
-                buffer = lines.pop() || '';
+                // Only the last segment may be incomplete — keep it for the next chunk
+                buffer = (done) ? '' : (lines.pop() || '');
 
                 for (const line of lines) {
                     if (line.startsWith('data: ')) {
@@ -456,6 +473,8 @@
                         }
                     }
                 }
+
+                if (done) break;
             }
         }
 
@@ -486,6 +505,20 @@
             if (event.event === 'complete') {
                 currentWorkflowId = event.workflow_id || null;
                 addLogEntry('complete', `Analysis complete. Workflow ID: ${currentWorkflowId || 'N/A'}`);
+
+                // Show summary immediately — don't wait for stream close in case
+                // the connection drops before clean termination.
+                if (event.elapsed_seconds) {
+                    document.getElementById('sum-time').innerText = `${event.elapsed_seconds}s`;
+                } else {
+                    const dur = ((Date.now() - startTime) / 1000).toFixed(1);
+                    document.getElementById('sum-time').innerText = `${dur}s`;
+                }
+                document.getElementById('sum-model').innerText = event.model_name || "Azure OpenAI";
+                summaryPlaceholder.classList.add('hidden');
+                summaryDiv.classList.remove('hidden');
+                const tokens = event.token_count || 0;
+                document.getElementById('sum-tokens').innerText = tokens > 0 ? `${Number(tokens).toLocaleString()} tokens` : '--';
                 return;
             }
 
@@ -592,10 +625,21 @@
                 logCacheByWorkflow[currentWorkflowId] = [...analysisLog];
             }
 
-            // UI Updates: Footer
-            document.getElementById('sum-time').innerText = `${durationSec}s`;
-            document.getElementById('sum-model').innerText = "MCTS + Azure OpenAI";
-            document.getElementById('sum-tokens').innerText = receivedMetricCount > 0 ? `${receivedMetricCount} updates` : 'No metrics resolved';
+            // Only set summary if the complete-event handler hasn't already done so.
+            // (The complete event carries server-side elapsed_seconds which is more
+            // accurate than the client-side stopwatch.)
+            const sumTime = document.getElementById('sum-time');
+            const timeVal = sumTime.innerText;
+            if (timeVal === '--' || timeVal === '...' || timeVal.startsWith('--')) {
+                sumTime.innerText = `${durationSec}s`;
+            }
+            const sumModel = document.getElementById('sum-model');
+            const modelVal = sumModel.innerText;
+            if (modelVal === '--' || modelVal === '...' || modelVal.startsWith('--')) {
+                sumModel.innerText = "Azure OpenAI";
+            }
+            const sumTokens = document.getElementById('sum-tokens');
+            sumTokens.innerText = receivedMetricCount > 0 ? `${receivedMetricCount} events` : '--';
 
             if (receivedMetricCount === 0) {
                 summaryPlaceholder.classList.remove('hidden');
@@ -607,26 +651,31 @@
 
             // UI Updates: Button
             btnAction.disabled = false;
-            btnAction.innerText = "Next analysis";
+            btnAction.innerText = "New Analysis";
             btnAction.classList.remove('bg-gray-400');
             btnAction.classList.add('bg-blue-600', 'hover:bg-blue-700');
 
             // Add History Record
             const now = new Date();
             const ts = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')} ${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
-            const dataSource = companySelect.value === 'TEST (Mock)' ? 'TEST' : 'Internal Model';
-            const historyTitle = `${dataSource} - ${ts}`;
+            const modelName = 'Azure OpenAI';
+            const historyTitle = `${modelName} - ${ts}`;
 
             document.getElementById('empty-history')?.remove();
 
             const li = document.createElement('li');
             li.className = "text-sm p-2 rounded hover:bg-gray-200 cursor-pointer text-gray-700 truncate border border-transparent hover:border-gray-300 transition";
             li.innerText = historyTitle;
-            li.title = `Analyzed ${selectedRows.size} indicators`;
+            li.title = `Company: ${companySelect.value} | ${selectedRows.size} metric types`;
             if (currentWorkflowId) {
                 li.dataset.workflowId = currentWorkflowId;
                 li.onclick = () => restoreWorkflow(currentWorkflowId);
                 li.title += ' (click to restore)';
+                // Persist so the result survives a page refresh
+                try {
+                    sessionStorage.setItem('lastWorkflowId', currentWorkflowId);
+                    sessionStorage.setItem('lastCompany', companySelect.value);
+                } catch (_) {}
             } else {
                 li.classList.add('text-gray-400', 'cursor-not-allowed');
                 li.title += ' (not persisted — cannot restore)';
@@ -648,8 +697,9 @@
                     const li = document.createElement('li');
                     const ts = wf.created_at ? wf.created_at.replace('T', ' ').substring(0, 16) : '';
                     li.className = "text-sm p-2 rounded hover:bg-gray-200 cursor-pointer text-gray-700 truncate border border-transparent hover:border-gray-300 transition";
-                    li.innerText = `${wf.data_source} - ${ts}`;
-                    li.title = `Company: ${wf.company_name} | ${wf.metric_count} metrics | Click to restore`;
+                    const historyLabel = wf.model_name || wf.data_source || 'Analysis';
+                    li.innerText = `${historyLabel} - ${ts}`;
+                    li.title = `Company: ${wf.company_name} | ${wf.metric_count} metric types | Click to restore`;
                     li.dataset.workflowId = wf.workflow_id;
                     li.onclick = () => restoreWorkflow(wf.workflow_id);
                     historyList.appendChild(li);
@@ -712,6 +762,7 @@
 
                 // Populate from SCT data
                 for (const [year, sections] of Object.entries(sctData)) {
+                    if (year === '_yoy') continue;  // handled separately below
                     for (const metrics of Object.values(sections)) {
                         for (const metric of metrics) {
                             const rowIndex = _findRowIndexByName(metric.canonical_name, nameToRow);
@@ -761,10 +812,69 @@
                     }
                 }
 
-                // Show results footer
-                document.getElementById('sum-time').innerText = '-- (restored)';
-                document.getElementById('sum-model').innerText = 'MCTS + Azure OpenAI';
-                document.getElementById('sum-tokens').innerText = '--';
+                // Populate YoY column from persisted _yoy data
+                const yoyData = sctData['_yoy'];
+                if (yoyData) {
+                    for (const [canonicalName, yoyMetric] of Object.entries(yoyData)) {
+                        const rowIndex = _findRowIndexByName(canonicalName, nameToRow);
+                        if (rowIndex == null) continue;
+                        const yoyCellDiv = document.getElementById(`cell-${rowIndex}-YoY`);
+                        if (!yoyCellDiv) continue;
+
+                        if (yoyMetric.status === 'resolved' && yoyMetric.value != null) {
+                            const valNum = parseFloat(yoyMetric.value);
+                            const isPositive = valNum >= 0;
+                            const arrow = isPositive ? '▲' : '▼';
+                            const colorClass = isPositive ? 'text-green-600' : 'text-red-500';
+                            const yoy_cds = yoyMetric.component_details || [];
+                            yoyCellDiv.innerHTML = `
+                                <div class="tooltip-container w-full h-full text-center flex items-center justify-center">
+                                    <span class="${colorClass} font-semibold">${arrow} ${Math.abs(valNum).toFixed(1)}%</span>
+                                    <div class="tooltip">
+                                        <p><strong>Audit Trail</strong></p>
+                                        <p class="mt-1">Metric: <strong>${canonicalName}</strong></p>
+                                        <p>Data Sourced from: <strong>${wf.data_source}</strong></p>
+                                        ${yoyMetric.formula_used ? `<hr class="my-1 border-gray-300"><p>Formula: <em>${yoyMetric.formula_used}</em></p>` : ''}
+                                        ${yoy_cds.length ? `
+                                            <hr class="my-1 border-gray-300">
+                                            <p class="text-xs font-semibold text-gray-500 mb-0.5">Components:</p>
+                                            ${yoy_cds.map(cd => `
+                                                <p class="text-xs text-gray-600">
+                                                    <span class="font-medium">${cd.component_name}</span>: ${cd.value != null ? Number(cd.value).toLocaleString('en-US', {maximumFractionDigits: 0}) : 'N/A'}
+                                                </p>
+                                            `).join('')}
+                                        ` : ''}
+                                        <p class="mt-1 text-xs text-gray-500">Year: YoY</p>
+                                    </div>
+                                </div>
+                            `;
+                            yoyCellDiv.parentElement.classList.remove('bg-yellow-50');
+                        } else {
+                            yoyCellDiv.innerHTML = `
+                                <div class="tooltip-container text-yellow-500 w-full h-full flex items-center justify-center">
+                                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
+                                    <div class="tooltip text-red-600 bg-red-50 border-red-200">
+                                        ${yoyMetric.error || 'Data unavailable.'}
+                                    </div>
+                                </div>
+                            `;
+                            yoyCellDiv.parentElement.classList.add('bg-yellow-50');
+                        }
+                    }
+                }
+
+                // Show results footer with actual workflow timing data
+                if (wf.elapsed_seconds != null) {
+                    document.getElementById('sum-time').innerText = `${wf.elapsed_seconds}s`;
+                } else {
+                    document.getElementById('sum-time').innerText = '-- (restored)';
+                }
+                document.getElementById('sum-model').innerText = wf.model_name || wf.data_source || 'Azure OpenAI';
+                if (wf.token_count != null && wf.token_count > 0) {
+                    document.getElementById('sum-tokens').innerText = `${Number(wf.token_count).toLocaleString()} tokens`;
+                } else {
+                    document.getElementById('sum-tokens').innerText = '--';
+                }
                 summaryPlaceholder.classList.add('hidden');
                 summaryDiv.classList.remove('hidden');
 
@@ -787,12 +897,9 @@
                 }
                 updateLogCount();
 
-                // Auto-open log panel if not open
-                if (!logPanelOpen) toggleLogPanel();
-
                 // Update button
                 btnAction.disabled = false;
-                btnAction.innerText = "Next analysis";
+                btnAction.innerText = "New Analysis";
                 btnAction.classList.remove('bg-gray-400', 'bg-purple-600', 'hover:bg-purple-700');
                 btnAction.classList.add('bg-blue-600', 'hover:bg-blue-700');
 
@@ -833,14 +940,16 @@
 
         function resetToSelection() {
             currentState = 'SELECTION';
-            
-            // Clear cells
-            selectedRows.forEach(rowIndex => {
+
+            // Clear ALL cells (not just selectedRows — handles history restore case)
+            indicators.forEach((_, rowIndex) => {
                 years.forEach(yr => {
                     const cellDiv = document.getElementById(`cell-${rowIndex}-${yr}`);
-                    cellDiv.innerHTML = '';
-                    cellDiv.classList.remove('flash-cell');
-                    cellDiv.parentElement.classList.remove('bg-yellow-50');
+                    if (cellDiv) {
+                        cellDiv.innerHTML = '';
+                        cellDiv.classList.remove('flash-cell');
+                        cellDiv.parentElement.classList.remove('bg-yellow-50');
+                    }
                 });
                 // Clear YoY cell
                 const yoyDiv = document.getElementById(`cell-${rowIndex}-YoY`);
@@ -849,12 +958,12 @@
                     yoyDiv.classList.remove('flash-cell');
                     yoyDiv.parentElement.classList.remove('bg-yellow-50');
                 }
-                
+
                 // Uncheck and reset row UI
                 const tr = tbody.children[rowIndex];
                 const chk = document.getElementById(`chk-${rowIndex}`);
-                chk.checked = false;
-                tr.classList.remove('row-selected');
+                if (chk) chk.checked = false;
+                if (tr) tr.classList.remove('row-selected');
             });
 
             selectedRows.clear();
@@ -881,7 +990,11 @@
 
             summaryDiv.classList.add('hidden');
             summaryPlaceholder.classList.remove('hidden');
-            
+            // Reset stale text so it doesn't bleed through to the next analysis
+            document.getElementById('sum-time').innerText = '--';
+            document.getElementById('sum-model').innerText = '--';
+            document.getElementById('sum-tokens').innerText = '--';
+
             btnAction.innerText = "Run analysis";
             btnAction.classList.remove('bg-blue-600', 'hover:bg-blue-700');
             btnAction.classList.add('bg-purple-600', 'hover:bg-purple-700');
@@ -916,11 +1029,6 @@
                 if (last.type === type && last.message === message) return;
             }
             analysisLog.push(entry);
-
-            // Auto-open log panel on first log entry
-            if (!logPanelOpen && analysisLog.length === 1) {
-                toggleLogPanel();
-            }
 
             renderLogEntry(entry);
             updateLogCount();
@@ -1023,6 +1131,31 @@
         initTable();
         loadCompanies();
         loadHistory();
+
+        // Auto-restore the most recent workflow if the page was refreshed
+        // after an analysis completed.
+        (function _autoRestoreLastWorkflow() {
+            try {
+                const savedId = sessionStorage.getItem('lastWorkflowId');
+                const savedCompany = sessionStorage.getItem('lastCompany');
+                if (savedId && savedCompany) {
+                    // Wait for company select to be populated then restore
+                    const _tryRestore = () => {
+                        for (const opt of companySelect.options) {
+                            if (opt.value === savedCompany) {
+                                companySelect.value = savedCompany;
+                                companySelect.disabled = true;
+                                restoreWorkflow(parseInt(savedId));
+                                return;
+                            }
+                        }
+                        // Company not loaded yet — retry after a short delay
+                        setTimeout(_tryRestore, 500);
+                    };
+                    _tryRestore();
+                }
+            } catch (_) {}
+        })();
     </script>
 </body>
 </html>
