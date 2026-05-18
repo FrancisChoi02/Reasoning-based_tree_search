@@ -1,0 +1,1212 @@
+<!DOCTYPE html>
+<!--
+  Input: POST /api/spread SSE stream from FastAPI backend
+  Output: Interactive SCT table with real-time cell updates, audit-trail tooltips
+  Position: Presentation layer — consumes backend SSE, no mock data path.
+  Design: Bamboo Corporate Financial theme (from resources/slide_design_template_green.md)
+  If modified, update this header and frontend/README_frontend.md.
+-->
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Financial Spreading Service</title>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;700&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        bamboo: {
+                            50:  '#E6F0EB',
+                            100: '#CCE1D7',
+                            200: '#99C3AF',
+                            300: '#66A587',
+                            400: '#33875F',
+                            500: '#004B30',
+                            600: '#003C26',
+                            700: '#00331F',
+                            800: '#001E12',
+                            900: '#001209',
+                        },
+                        leaf: {
+                            50:  '#F0F7E8',
+                            100: '#E1EFD1',
+                            200: '#C3DFA3',
+                            300: '#A5CF75',
+                            400: '#87BF47',
+                            500: '#6DB131',
+                            600: '#578E27',
+                            700: '#416A1D',
+                            800: '#2C4713',
+                            900: '#16230A',
+                        },
+                        surface: {
+                            bg:     '#F0F2F0',
+                            card:   '#F8FAF9',
+                            border: '#E0E7E1',
+                        },
+                    },
+                    fontFamily: {
+                        heading: ["'DM Sans'", 'sans-serif'],
+                        body:    ["'Inter'", 'sans-serif'],
+                    },
+                },
+            },
+        };
+    </script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+
+        /* Flash animation for incoming data */
+        @keyframes flashHighlight {
+            0%   { background-color: #E1EFD1; color: #004B30; font-weight: bold; }
+            100% { background-color: transparent; color: inherit; font-weight: normal; }
+        }
+        .flash-cell {
+            animation: flashHighlight 1.5s ease-out;
+        }
+
+        /* Tooltip styling */
+        .tooltip-container {
+            position: relative;
+            cursor: help;
+        }
+        .tooltip-container .tooltip {
+            visibility: hidden;
+            background-color: #F8FAF9;
+            color: #4A4A4A;
+            text-align: left;
+            border: 1px solid #E0E7E1;
+            border-radius: 6px;
+            padding: 8px 12px;
+            position: absolute;
+            z-index: 50;
+            bottom: 125%;
+            left: 50%;
+            transform: translateX(-50%);
+            width: max-content;
+            max-width: 300px;
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
+            font-size: 0.75rem;
+            opacity: 0;
+            transition: opacity 0.3s;
+            pointer-events: none;
+        }
+        .tooltip-container:hover .tooltip {
+            visibility: visible;
+            opacity: 1;
+        }
+
+        /* Custom Scrollbar for table */
+        .table-scroll::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        .table-scroll::-webkit-scrollbar-track {
+            background: #F0F2F0;
+        }
+        .table-scroll::-webkit-scrollbar-thumb {
+            background: #99C3AF;
+            border-radius: 4px;
+        }
+        .table-scroll::-webkit-scrollbar-thumb:hover {
+            background: #66A587;
+        }
+
+        /* Sidebar transition */
+        #sidebar {
+            transition: width 0.3s ease, padding 0.3s ease, opacity 0.3s ease;
+            overflow: hidden;
+        }
+        .sidebar-closed {
+            width: 0 !important;
+            padding-left: 0 !important;
+            padding-right: 0 !important;
+            border: none !important;
+            opacity: 0;
+        }
+
+        .row-selected {
+            background-color: #E6F0EB;
+        }
+
+        /* Log panel (right sidebar) */
+        #log-panel {
+            transition: width 0.3s ease, padding 0.3s ease, opacity 0.3s ease;
+            overflow: hidden;
+        }
+        .log-panel-closed {
+            width: 0 !important;
+            padding-left: 0 !important;
+            padding-right: 0 !important;
+            border: none !important;
+            opacity: 0;
+        }
+        .log-entry {
+            padding: 2px 0;
+            border-bottom: 1px solid #374151;
+            line-height: 1.4;
+        }
+        .log-entry .ts { color: #9ca3af; }
+        .log-entry.verify { color: #60a5fa; }
+        .log-entry.metric { color: #6DB131; }
+        .log-entry.error { color: #f87171; }
+        .log-entry.system { color: #fbbf24; }
+        .log-entry.complete { color: #a78bfa; }
+
+        /* Select-all checkbox */
+        #select-all-chk {
+            width: 1rem;
+            height: 1rem;
+            cursor: pointer;
+            accent-color: #0F573B;
+        }
+    </style>
+</head>
+<body class="bg-[#F0F2F0] h-screen flex text-sm text-[#1A1A1A] font-body overflow-hidden">
+
+    <!-- Sidebar: History Panel -->
+    <aside id="sidebar" class="w-64 bg-white border-r border-surface-border flex flex-col shadow-sm flex-shrink-0">
+        <div class="p-4 flex items-center justify-between border-b border-surface-border bg-surface-card">
+            <h2 class="font-heading font-semibold text-[#1A1A1A] flex items-center gap-2">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                History
+            </h2>
+            <button onclick="refreshHistory()" class="text-xs text-[#666666] hover:text-bamboo-500 p-1 rounded hover:bg-surface-border transition" title="Refresh history">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+            </button>
+        </div>
+        <div class="p-4 flex-1 overflow-y-auto">
+            <ul id="history-list" class="space-y-2">
+                <li class="text-xs text-[#666666] italic" id="empty-history">No past analyses</li>
+            </ul>
+        </div>
+    </aside>
+
+    <!-- Main Content Area -->
+    <main class="flex-1 flex flex-col min-w-0">
+        <!-- Header -->
+        <header class="h-16 bg-white border-b border-surface-border flex items-center justify-between px-6 shadow-sm z-10 flex-shrink-0">
+            <div class="flex items-center gap-4">
+                <button onclick="toggleSidebar()" class="p-2 hover:bg-gray-100 rounded-md text-gray-600 transition" title="Toggle History Panel">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"></path></svg>
+                </button>
+                <div class="flex items-center gap-3">
+                    <img src="logo.png" alt="Logo" class="h-8 w-auto"
+                         onerror="this.style.display='none'">
+                    <h1 class="text-xl font-bold text-[#0F573B] truncate font-heading">Financial Spreading Service</h1>
+                </div>
+            </div>
+
+            <!-- Company Selection (State 1) -->
+            <div class="flex items-center gap-3">
+                <div class="flex items-center gap-1">
+                    <label for="company-select" class="font-semibold text-[#1A1A1A] whitespace-nowrap hidden sm:block">Company:</label>
+                    <select id="company-select" class="font-bold bg-surface-card border border-surface-border text-[#1A1A1A] text-sm rounded-lg focus:ring-leaf-500 focus:border-leaf-500 block w-full p-2 cursor-pointer outline-none max-w-[200px]">
+                        <option value="" disabled selected>Select company</option>
+                    </select>
+                </div>
+                <div class="flex items-center gap-1">
+                    <label for="max-workers-input" class="font-semibold text-[#1A1A1A] whitespace-nowrap hidden sm:block text-xs" title="Max concurrent LLM calls per MCTS batch. Lower = safer under TPM limits.">Workers:</label>
+                    <input type="number" id="max-workers-input" value="1" min="1" max="10" class="bg-surface-card border border-surface-border text-[#1A1A1A] text-sm rounded-lg focus:ring-leaf-500 focus:border-leaf-500 block w-16 p-2 outline-none text-center" title="Max concurrent LLM calls per MCTS batch. 1 = safe under 1M TPM with 5 years.">
+                </div>
+                <button onclick="toggleLogPanel()" id="btn-log-toggle" class="p-2 hover:bg-surface-card rounded-md text-[#666666] transition" title="Toggle Log Panel">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"></path></svg>
+                </button>
+            </div>
+        </header>
+
+        <!-- Table Container -->
+        <div class="flex-1 p-4 sm:p-6 overflow-hidden flex flex-col min-h-0">
+            <div class="flex-1 bg-white border border-surface-border rounded-lg shadow-sm overflow-hidden flex flex-col">
+                <div class="overflow-auto flex-1 table-scroll">
+                    <table class="w-full text-left border-collapse min-w-[800px]">
+                        <thead class="bg-[#0F573B] sticky top-0 z-20 shadow-sm">
+                            <tr>
+                                <th class="p-3 border-b border-r border-[#1B7A4A] font-heading font-bold text-white text-lg w-40">SCT Section</th>
+                                <th class="p-3 border-b border-r border-[#1B7A4A] font-heading font-bold text-white text-lg w-64">Metric</th>
+                                <th class="p-3 border-b border-[#1B7A4A] font-heading font-bold text-white text-lg text-center w-24">FY21</th>
+                                <th class="p-3 border-b border-[#1B7A4A] font-heading font-bold text-white text-lg text-center w-24">FY22</th>
+                                <th class="p-3 border-b border-[#1B7A4A] font-heading font-bold text-white text-lg text-center w-24">FY23</th>
+                                <th class="p-3 border-b border-[#1B7A4A] font-heading font-bold text-white text-lg text-center w-24">FY24</th>
+                                <th class="p-3 border-b border-[#1B7A4A] font-heading font-bold text-white text-lg text-center w-24 border-r">FY25</th>
+                                <th class="p-3 border-b border-[#1B7A4A] font-heading font-bold text-white text-lg text-center w-28">YoY Change</th>
+                                <th class="p-3 border-b border-[#1B7A4A] font-heading font-bold text-white text-lg text-center w-20">
+                                    <input type="checkbox" id="select-all-chk" onclick="toggleSelectAll()" title="Select / Deselect all metrics">
+                                </th>
+                            </tr>
+                        </thead>
+                        <tbody id="sct-body" class="divide-y divide-surface-border cursor-pointer bg-white">
+                            <!-- Rows injected here by JS -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Footer area: Summary & Controls -->
+            <div class="mt-4 flex flex-col sm:flex-row items-center sm:items-end justify-between gap-4 min-h-[60px] flex-shrink-0">
+                <!-- Results Summary (Hidden initially) -->
+                <div id="results-summary" class="hidden bg-surface-card text-bamboo-800 p-3 rounded border border-surface-border text-xs flex flex-wrap gap-4 sm:gap-6 w-full sm:w-auto">
+                    <div><strong>Total Time:</strong> <span id="sum-time">--</span></div>
+                    <div><strong>Model:</strong> <span id="sum-model">--</span></div>
+                    <div><strong>Tokens:</strong> <span id="sum-tokens">--</span></div>
+                </div>
+                <div id="summary-placeholder" class="text-[#666666] text-xs italic text-center sm:text-left w-full sm:w-auto">
+                    Select a company and at least 2 indicators to begin analysis.
+                </div>
+
+                <button id="btn-action" onclick="handleActionClick()" disabled class="w-full sm:w-auto px-6 py-2.5 bg-[#0F573B] text-white font-heading font-semibold rounded-lg shadow-md hover:bg-[#0A3D28] disabled:opacity-50 disabled:cursor-not-allowed transition duration-150 ease-in-out whitespace-nowrap">
+                    Run analysis
+                </button>
+            </div>
+        </div>
+    </main>
+
+    <!-- Right Sidebar: Log Panel -->
+    <aside id="log-panel" class="w-80 bg-gray-900 text-gray-200 border-l border-gray-700 flex flex-col shadow-sm flex-shrink-0 log-panel-closed">
+        <div class="p-3 flex items-center justify-between border-b border-gray-700 bg-gray-800 flex-shrink-0">
+            <h2 class="font-heading font-semibold text-gray-300 text-sm flex items-center gap-2">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
+                Analysis Log
+            </h2>
+            <div class="flex items-center gap-1">
+                <span id="log-count" class="text-xs text-gray-500 mr-1">0</span>
+                <button onclick="clearLog()" class="text-xs text-gray-500 hover:text-gray-300 p-1 rounded hover:bg-gray-700 transition" title="Clear log">Clear</button>
+            </div>
+        </div>
+        <div id="log-content" class="p-3 flex-1 overflow-y-auto font-mono text-xs leading-relaxed">
+            <div class="text-gray-600 italic text-xs" id="log-empty">No analysis running. Select metrics and run an analysis to see logs here.</div>
+        </div>
+    </aside>
+
+    <script>
+        // --- DATA DEFINITION ---
+        const indicators = [
+            { sec: 'Income Statement', met: 'Revenue' }, { sec: 'Income Statement', met: 'Gross Profit' },
+            { sec: 'Income Statement', met: 'Gross Profit Margin %' }, { sec: 'Income Statement', met: 'EBITDA' },
+            { sec: 'Income Statement', met: 'EBITDA Margin %' }, { sec: 'Income Statement', met: 'Operating Profit (Loss)' },
+            { sec: 'Income Statement', met: 'Operating Profit Margin %' }, { sec: 'Income Statement', met: 'Interest Expense (Net)' },
+            { sec: 'Income Statement', met: 'Net Profit' },
+            { sec: 'Balance Sheet', met: 'Net Worth' }, { sec: 'Balance Sheet', met: 'Tangible Net Worth' },
+            { sec: 'Balance Sheet', met: 'Total Ext. Funded Debt' }, { sec: 'Balance Sheet', met: 'Cash + Mkt Securities' },
+            { sec: 'Balance Sheet', met: 'Net Funded Debt' }, { sec: 'Balance Sheet', met: 'Working Capital Days' },
+            { sec: 'Balance Sheet', met: 'Change in Working Capital' },
+            { sec: 'Cash Flow', met: 'Operating cashflow' }, { sec: 'Cash Flow', met: 'Investing cashflow' },
+            { sec: 'Cash Flow', met: 'Financing cashflow' }, { sec: 'Cash Flow', met: 'w/w Dividends' },
+            { sec: 'Cash Flow', met: 'Free cashflow' },
+            { sec: 'Ratios', met: 'Ext. Gearing (TFD/TNW) (x)' }, { sec: 'Ratios', met: 'NFD / EBITDA (x)' },
+            { sec: 'Ratios', met: 'TFD / EBITDA (x)' }, { sec: 'Ratios', met: 'NOCF / Interest (x)' },
+            { sec: 'Others', met: 'Capital Expenditure' }
+        ];
+        const years = ['2021', '2022', '2023', '2024', '2025'];
+        const BACKEND_URL = 'http://localhost:8000';
+
+        // --- STATE VARIABLES ---
+        // states: 'SELECTION', 'ANALYSIS', 'RESULTS'
+        let currentState = 'SELECTION';
+        let selectedRows = new Set();
+        let startTime = 0;
+        let currentWorkflowId = null;
+        let receivedMetricCount = 0;
+        let historyCache = {};
+        let analysisLog = [];          // [{ts, type, message}]
+        let logPanelOpen = false;
+        let logCacheByWorkflow = {};   // workflowId -> log entries
+
+        // --- DOM ELEMENTS ---
+        const tbody = document.getElementById('sct-body');
+        const companySelect = document.getElementById('company-select');
+        const btnAction = document.getElementById('btn-action');
+        const summaryDiv = document.getElementById('results-summary');
+        const summaryPlaceholder = document.getElementById('summary-placeholder');
+        const historyList = document.getElementById('history-list');
+
+        // --- INITIALIZATION ---
+        function initTable() {
+            let currentSec = "";
+            indicators.forEach((ind, index) => {
+                const tr = document.createElement('tr');
+                tr.className = "hover:bg-surface-card transition border-b border-surface-border";
+                tr.onclick = (e) => {
+                    // Prevent row click if clicking directly on a checkbox (to avoid double toggle)
+                    if(e.target.tagName !== 'INPUT' && currentState === 'SELECTION') {
+                        toggleRowSelection(index);
+                    }
+                };
+
+                // Determine if section label should be shown or merged visually
+                const displaySec = (ind.sec === currentSec) ? "" : ind.sec;
+                currentSec = ind.sec;
+
+                let html = `
+                    <td class="p-3 text-[#666666] border-r border-surface-border align-top">${displaySec}</td>
+                    <td class="p-3 text-[#1A1A1A] font-medium border-r border-surface-border">${ind.met}</td>
+                `;
+
+                years.forEach(yr => {
+                    html += `
+                        <td class="p-2 border-r border-surface-border text-center relative">
+                            <div id="cell-${index}-${yr}" class="w-full h-full min-h-[24px] flex items-center justify-center text-[#4A4A4A]">
+                                <!-- Value injected here -->
+                            </div>
+                        </td>
+                    `;
+                });
+
+                // YoY Change cell
+                html += `
+                    <td class="p-2 border-r border-surface-border text-center relative">
+                        <div id="cell-${index}-YoY" class="w-full h-full min-h-[24px] flex items-center justify-center text-[#4A4A4A]">
+                            <!-- YoY value injected here -->
+                        </div>
+                    </td>
+                `;
+
+                html += `
+                    <td class="p-3 text-center">
+                        <input type="checkbox" id="chk-${index}" onchange="toggleRowSelection(${index}, true)"
+                            class="w-4 h-4 text-bamboo-500 bg-surface-card border-surface-border rounded focus:ring-leaf-500 cursor-pointer pointer-events-none">
+                    </td>
+                `;
+
+                tr.innerHTML = html;
+                tbody.appendChild(tr);
+            });
+
+            // Listeners
+            companySelect.addEventListener('change', updateButtonState);
+        }
+
+        // --- LOGIC: SELECTION STATE ---
+        function toggleRowSelection(index, fromCheckbox = false) {
+            if (currentState !== 'SELECTION') return;
+
+            const tr = tbody.children[index];
+            const chk = document.getElementById(`chk-${index}`);
+
+            if (selectedRows.has(index)) {
+                selectedRows.delete(index);
+                chk.checked = false;
+                tr.classList.remove('row-selected');
+            } else {
+                selectedRows.add(index);
+                chk.checked = true;
+                tr.classList.add('row-selected');
+            }
+            updateButtonState();
+            updateSelectAllState();
+        }
+
+        function updateButtonState() {
+            if (currentState !== 'SELECTION') return;
+            const hasCompany = companySelect.value !== "";
+            const hasValidCount = selectedRows.size > 1;
+
+            if (hasCompany && hasValidCount) {
+                btnAction.disabled = false;
+                summaryPlaceholder.innerText = "Ready to run analysis.";
+            } else {
+                btnAction.disabled = true;
+                if (!hasCompany) summaryPlaceholder.innerText = "Please select a company to begin.";
+                else summaryPlaceholder.innerText = `Select at least 2 indicators (${selectedRows.size} selected).`;
+            }
+        }
+
+        // --- LOGIC: STATE TRANSITIONS ---
+        function handleActionClick() {
+            if (currentState === 'SELECTION') startAnalysis();
+            else if (currentState === 'RESULTS') resetToSelection();
+        }
+
+        function startAnalysis() {
+            currentState = 'ANALYSIS';
+            currentWorkflowId = null;
+            startTime = Date.now();
+            receivedMetricCount = 0;
+
+            // Reset summary values so stale text from a prior workflow restore
+            // cannot survive into the new analysis output.
+            document.getElementById('sum-time').innerText = '...';
+            document.getElementById('sum-model').innerText = '...';
+            document.getElementById('sum-tokens').innerText = '...';
+            summaryDiv.classList.add('hidden');
+            summaryPlaceholder.classList.remove('hidden');
+
+            // Initialize log
+            analysisLog = [];
+            const content = document.getElementById('log-content');
+            const emptyMsg = document.getElementById('log-empty');
+            content.innerHTML = '';
+            if (emptyMsg) emptyMsg.remove();
+            updateLogCount();
+            addLogEntry('system', `Starting analysis for ${companySelect.value} — ${years.length} years, ${selectedRows.size} metrics`);
+
+            // UI Updates
+            btnAction.disabled = true;
+            btnAction.innerText = "Analyzing...";
+            btnAction.classList.remove('bg-[#0F573B]', 'hover:bg-[#0A3D28]');
+            btnAction.classList.add('bg-[#CCE1D7]');
+            companySelect.disabled = true;
+            document.getElementById('select-all-chk').disabled = true;
+            summaryPlaceholder.innerText = "Connecting to backend...";
+
+            // Build request payload
+            const metricsPayload = [];
+            selectedRows.forEach(rowIndex => {
+                metricsPayload.push({
+                    row_index: rowIndex,
+                    metric_name: indicators[rowIndex].met
+                });
+            });
+
+            const body = JSON.stringify({
+                company_name: companySelect.value,
+                year_periods: years,
+                metrics: metricsPayload,
+                data_source: "Internal Model",
+                max_workers: parseInt(document.getElementById('max-workers-input').value) || 1
+            });
+
+            // Connect to backend SSE stream (mock or real)
+            const endpoint = companySelect.value === 'TEST (Mock)'
+                ? `${BACKEND_URL}/api/mock/spread`
+                : `${BACKEND_URL}/api/spread`;
+
+            fetch(endpoint, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: body
+            }).then(response => {
+                if (!response.ok) {
+                    throw new Error(`Backend returned ${response.status}`);
+                }
+                summaryPlaceholder.innerText = "Analysis in progress. Receiving data...";
+                return consumeSSEStream(response);
+            }).then(() => {
+                finishAnalysis();
+            }).catch(err => {
+                summaryDiv.classList.add('hidden');
+                summaryPlaceholder.classList.remove('hidden');
+                summaryPlaceholder.innerText = `Connection error: ${err.message}. Check backend.`;
+                btnAction.disabled = false;
+                btnAction.innerText = "Retry";
+                btnAction.classList.remove('bg-[#CCE1D7]');
+                btnAction.classList.add('bg-[#0F573B]', 'hover:bg-[#0A3D28]');
+                currentState = 'SELECTION';
+            });
+        }
+
+        // --- SSE Stream Consumer ---
+        async function consumeSSEStream(response) {
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (value) {
+                    buffer += decoder.decode(value, { stream: true });
+                }
+
+                const lines = buffer.split('\n');
+                // Only the last segment may be incomplete — keep it for the next chunk
+                buffer = (done) ? '' : (lines.pop() || '');
+
+                for (const line of lines) {
+                    if (line.startsWith('data: ')) {
+                        try {
+                            const event = JSON.parse(line.slice(6));
+                            handleSSEEvent(event);
+                        } catch (e) {
+                            // Skip unparseable lines
+                        }
+                    }
+                }
+
+                if (done) break;
+            }
+        }
+
+        function handleSSEEvent(event) {
+            if (event.event === 'tree_verification') {
+                const results = event.results || {};
+                const errors = Object.entries(results).filter(([, r]) => r.status === 'error');
+                if (errors.length > 0) {
+                    const names = errors.map(([y, r]) => `${y}: ${r.error}`).join('; ');
+                    summaryPlaceholder.innerHTML = `<span class="text-red-600 font-semibold">Tree issues detected:</span> ${names}`;
+                    addLogEntry('error', `Tree verification FAILED: ${names}`);
+                } else {
+                    summaryPlaceholder.innerText = "Trees verified. Running MCTS search...";
+                    const okYears = Object.entries(results)
+                        .filter(([, r]) => r.status === 'ok' || r.status === 'degraded')
+                        .map(([y, r]) => `${y}: ${r.status} (nodes=${r.total_nodes}, leaves=${r.leaves_with_text})`);
+                    okYears.forEach(msg => addLogEntry('verify', msg));
+                }
+                return;
+            }
+
+            if (event.event === 'year_error') {
+                console.warn(`Year ${event.year}: ${event.message}`);
+                addLogEntry('error', `Year ${event.year}: ${event.message}`);
+                return;
+            }
+
+            if (event.event === 'complete') {
+                currentWorkflowId = event.workflow_id || null;
+                addLogEntry('complete', `Analysis complete. Workflow ID: ${currentWorkflowId || 'N/A'}`);
+
+                // Show summary immediately — don't wait for stream close in case
+                // the connection drops before clean termination.
+                if (event.elapsed_seconds) {
+                    document.getElementById('sum-time').innerText = `${event.elapsed_seconds}s`;
+                } else {
+                    const dur = ((Date.now() - startTime) / 1000).toFixed(1);
+                    document.getElementById('sum-time').innerText = `${dur}s`;
+                }
+                document.getElementById('sum-model').innerText = event.model_name || "Azure OpenAI";
+                summaryPlaceholder.classList.add('hidden');
+                summaryDiv.classList.remove('hidden');
+                const tokens = event.token_count || 0;
+                document.getElementById('sum-tokens').innerText = tokens > 0 ? `${Number(tokens).toLocaleString()} tokens` : '--';
+                return;
+            }
+
+            // Metric event: { canonical_name, year, row_index, value, status, formula, error, source_location, component_details }
+            if (event.row_index != null && event.year) {
+                receivedMetricCount++;
+                // Normalize YoY year keys (e.g. "2022_YoY" → "YoY") for cell lookup
+                const normalizedEvent = { ...event };
+                if (event.year.endsWith('_YoY')) {
+                    normalizedEvent.year = 'YoY';
+                }
+                updateCellFromSSE(normalizedEvent);
+                summaryPlaceholder.innerText = `Analysis in progress. Received ${receivedMetricCount} metric updates...`;
+
+                const statusIcon = event.status === 'resolved' ? '✓' : event.status === 'partial' ? '~' : '✗';
+                const valStr = event.value != null ? Number(event.value).toLocaleString('en-US', {maximumFractionDigits: 0}) : 'N/A';
+                addLogEntry('metric', `[${statusIcon}] ${event.canonical_name}  year=${event.year}  value=${valStr}  ${event.status.toUpperCase()}`);
+
+                // Also update the per-year YoY cell (e.g. "2022_YoY") if it exists
+                if (event.year.endsWith('_YoY')) {
+                    const yoyCellDiv = document.getElementById(`cell-${event.row_index}-${event.year}`);
+                    if (yoyCellDiv) {
+                        updateCellFromSSE(event);
+                    }
+                }
+            }
+        }
+
+        function updateCellFromSSE(event) {
+            const { row_index, year, value, status, formula, error, component_details, source_location } = event;
+            const cellDiv = document.getElementById(`cell-${row_index}-${year}`);
+            if (!cellDiv) return;
+
+            cellDiv.classList.remove('flash-cell');
+            void cellDiv.offsetWidth;
+
+            const metricName = indicators[row_index] ? indicators[row_index].met : event.canonical_name;
+            const sourceName = companySelect.value === 'TEST (Mock)' ? 'TEST' : 'Internal Model';
+
+            if (status === 'resolved' && value != null) {
+                const isYoY = year === 'YoY';
+                let displayHtml;
+
+                if (isYoY) {
+                    const valNum = parseFloat(value);
+                    const isPositive = valNum >= 0;
+                    const arrow = isPositive ? '▲' : '▼';
+                    const colorClass = isPositive ? 'text-leaf-500' : 'text-red-500';
+                    displayHtml = `<span class="${colorClass} font-semibold">${arrow} ${Math.abs(valNum).toFixed(1)}%</span>`;
+                } else {
+                    const formatted = Number(value).toLocaleString('en-US', { maximumFractionDigits: 0 });
+                    displayHtml = formatted;
+                }
+
+                cellDiv.innerHTML = `
+                    <div class="tooltip-container w-full h-full text-center flex items-center justify-center">
+                        ${displayHtml}
+                        <div class="tooltip">
+                            <p><strong>Audit Trail</strong></p>
+                            <p class="mt-1">Metric: <strong>${metricName}</strong></p>
+                            <p>Data Sourced from: <strong>${sourceName}</strong></p>
+                            ${source_location ? `<p class="mt-1 text-xs text-gray-500">Source: ${source_location}</p>` : ''}
+                            ${formula ? `<hr class="my-1 border-surface-border"><p>Formula: <em>${formula}</em></p>` : ''}
+                            ${component_details && component_details.length ? `
+                                <hr class="my-1 border-surface-border">
+                                <p class="text-xs font-semibold text-gray-500 mb-0.5">Components:</p>
+                                ${component_details.map(cd => `
+                                    <p class="text-xs text-gray-600">
+                                        <span class="font-medium">${cd.component_name}</span>: ${cd.value != null ? Number(cd.value).toLocaleString('en-US', {maximumFractionDigits: 0}) : 'N/A'}
+                                        ${cd.source_location ? `<span class="text-gray-400"> (${cd.source_location})</span>` : ''}
+                                    </p>
+                                `).join('')}
+                            ` : ''}
+                            <p class="mt-1 text-xs text-gray-500">Year: ${year}</p>
+                        </div>
+                    </div>
+                `;
+                cellDiv.parentElement.classList.remove('bg-yellow-50');
+            } else {
+                // Unresolved or error
+                cellDiv.innerHTML = `
+                    <div class="tooltip-container text-yellow-500 w-full h-full flex items-center justify-center">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
+                        <div class="tooltip text-red-600 bg-red-50 border-red-200">
+                            ${error || 'Data unavailable for this metric.'}
+                        </div>
+                    </div>
+                `;
+                cellDiv.parentElement.classList.add('bg-yellow-50');
+            }
+
+            cellDiv.classList.add('flash-cell');
+        }
+
+        function finishAnalysis() {
+            currentState = 'RESULTS';
+            const durationSec = ((Date.now() - startTime) / 1000).toFixed(1);
+
+            addLogEntry('system', `Duration: ${durationSec}s | Total metric updates: ${receivedMetricCount}`);
+            addLogEntry('complete', `--- Analysis finished ---`);
+
+            // Store log for historical recall
+            if (currentWorkflowId) {
+                logCacheByWorkflow[currentWorkflowId] = [...analysisLog];
+            }
+
+            // Only set summary if the complete-event handler hasn't already done so.
+            // (The complete event carries server-side elapsed_seconds which is more
+            // accurate than the client-side stopwatch.)
+            const sumTime = document.getElementById('sum-time');
+            const timeVal = sumTime.innerText;
+            if (timeVal === '--' || timeVal === '...' || timeVal.startsWith('--')) {
+                sumTime.innerText = `${durationSec}s`;
+            }
+            const sumModel = document.getElementById('sum-model');
+            const modelVal = sumModel.innerText;
+            if (modelVal === '--' || modelVal === '...' || modelVal.startsWith('--')) {
+                sumModel.innerText = "Azure OpenAI";
+            }
+            const sumTokens = document.getElementById('sum-tokens');
+            sumTokens.innerText = receivedMetricCount > 0 ? `${receivedMetricCount} events` : '--';
+
+            if (receivedMetricCount === 0) {
+                summaryPlaceholder.classList.remove('hidden');
+                summaryPlaceholder.innerHTML = '<span class="text-red-600 font-semibold">No metrics were resolved.</span> Check that trees exist in the DB for the selected company and years.';
+            } else {
+                summaryPlaceholder.classList.add('hidden');
+            }
+            summaryDiv.classList.remove('hidden');
+
+            // UI Updates: Button
+            btnAction.disabled = false;
+            btnAction.innerText = "New Analysis";
+            btnAction.classList.remove('bg-[#CCE1D7]');
+            btnAction.classList.add('bg-[#0F573B]', 'hover:bg-[#0A3D28]');
+
+            // Add History Record
+            const now = new Date();
+            const ts = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')} ${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
+            const modelName = 'Azure OpenAI';
+            const historyTitle = `${modelName} - ${ts}`;
+
+            document.getElementById('empty-history')?.remove();
+
+            const li = document.createElement('li');
+            li.className = "text-sm p-2 rounded hover:bg-surface-border cursor-pointer text-[#4A4A4A] truncate border border-transparent hover:border-surface-border transition";
+            li.innerText = historyTitle;
+            li.title = `Company: ${companySelect.value} | ${selectedRows.size} metric types`;
+            if (currentWorkflowId) {
+                li.dataset.workflowId = currentWorkflowId;
+                li.onclick = () => restoreWorkflow(currentWorkflowId);
+                li.title += ' (click to restore)';
+                // Persist so the result survives a page refresh
+                try {
+                    sessionStorage.setItem('lastWorkflowId', currentWorkflowId);
+                    sessionStorage.setItem('lastCompany', companySelect.value);
+                } catch (_) {}
+            } else {
+                li.classList.add('text-[#666666]', 'cursor-not-allowed');
+                li.title += ' (not persisted — cannot restore)';
+            }
+            historyList.prepend(li);
+        }
+
+        // --- HISTORY MANAGEMENT ---
+        async function loadHistory() {
+            try {
+                const resp = await fetch(`${BACKEND_URL}/api/history`);
+                if (!resp.ok) return;
+                const workflows = await resp.json();
+                if (!workflows.length) return;
+
+                document.getElementById('empty-history')?.remove();
+                historyList.innerHTML = '';
+                workflows.forEach(wf => {
+                    const li = document.createElement('li');
+                    const ts = wf.created_at ? wf.created_at.replace('T', ' ').substring(0, 16) : '';
+                    li.className = "text-sm p-2 rounded hover:bg-surface-border cursor-pointer text-[#4A4A4A] truncate border border-transparent hover:border-surface-border transition";
+                    const historyLabel = wf.model_name || wf.data_source || 'Analysis';
+                    li.innerText = `${historyLabel} - ${ts}`;
+                    li.title = `Company: ${wf.company_name} | ${wf.metric_count} metric types | Click to restore`;
+                    li.dataset.workflowId = wf.workflow_id;
+                    li.onclick = () => restoreWorkflow(wf.workflow_id);
+                    historyList.appendChild(li);
+                });
+            } catch (e) {
+                // Silently fail — history is non-critical
+            }
+        }
+
+        function refreshHistory() {
+            loadHistory();
+        }
+
+        async function restoreWorkflow(workflowId) {
+            try {
+                const resp = await fetch(`${BACKEND_URL}/api/history/${workflowId}`);
+                if (!resp.ok) {
+                    alert(`Failed to load workflow: ${resp.status}`);
+                    return;
+                }
+                const wf = await resp.json();
+                const sctData = wf.sct_data || {};
+
+                // Switch to RESULTS state and populate the table
+                currentState = 'RESULTS';
+
+                // Set company and source dropdowns to match restored workflow
+                if (wf.company_name) {
+                    // Ensure company exists in dropdown; add it if missing
+                    let found = false;
+                    for (const opt of companySelect.options) {
+                        if (opt.value === wf.company_name) { found = true; break; }
+                    }
+                    if (!found) {
+                        const opt = document.createElement('option');
+                        opt.value = wf.company_name;
+                        opt.textContent = wf.company_name;
+                        companySelect.appendChild(opt);
+                    }
+                    companySelect.value = wf.company_name;
+                }
+                companySelect.disabled = true;
+                document.getElementById('select-all-chk').disabled = true;
+
+                // Clear all cells first
+                indicators.forEach((_, rowIndex) => {
+                    years.forEach(yr => {
+                        const cellDiv = document.getElementById(`cell-${rowIndex}-${yr}`);
+                        if (cellDiv) { cellDiv.innerHTML = ''; cellDiv.classList.remove('flash-cell'); cellDiv.parentElement.classList.remove('bg-yellow-50'); }
+                    });
+                    const yoyDiv = document.getElementById(`cell-${rowIndex}-YoY`);
+                    if (yoyDiv) { yoyDiv.innerHTML = ''; yoyDiv.classList.remove('flash-cell'); yoyDiv.parentElement.classList.remove('bg-yellow-50'); }
+                });
+
+                // Build metric-to-row index map from frontend indicators for fast lookup
+                const nameToRow = {};
+                indicators.forEach((ind, i) => {
+                    nameToRow[_normalizeName(ind.met)] = i;
+                });
+
+                // Populate from SCT data
+                for (const [year, sections] of Object.entries(sctData)) {
+                    if (year === '_yoy') continue;  // handled separately below
+                    for (const metrics of Object.values(sections)) {
+                        for (const metric of metrics) {
+                            const rowIndex = _findRowIndexByName(metric.canonical_name, nameToRow);
+                            if (rowIndex == null) continue;
+                            const cellDiv = document.getElementById(`cell-${rowIndex}-${year}`);
+                            if (!cellDiv) continue;
+
+                            if (metric.status === 'resolved' && metric.value != null) {
+                                const formatted = Number(metric.value).toLocaleString('en-US', { maximumFractionDigits: 0 });
+                                const metric_cds = metric.component_details || [];
+                                cellDiv.innerHTML = `
+                                    <div class="tooltip-container w-full h-full text-center flex items-center justify-center">
+                                        ${formatted}
+                                        <div class="tooltip">
+                                            <p><strong>Audit Trail</strong></p>
+                                            <p class="mt-1">Metric: <strong>${metric.canonical_name}</strong></p>
+                                            <p>Data Sourced from: <strong>${wf.data_source}</strong></p>
+                                            ${metric.source_location ? `<p class="mt-1 text-xs text-gray-500">Source: ${metric.source_location}</p>` : ''}
+                                            ${metric.formula_used ? `<hr class="my-1 border-surface-border"><p>Formula: <em>${metric.formula_used}</em></p>` : ''}
+                                            ${metric_cds.length ? `
+                                                <hr class="my-1 border-surface-border">
+                                                <p class="text-xs font-semibold text-gray-500 mb-0.5">Components:</p>
+                                                ${metric_cds.map(cd => `
+                                                    <p class="text-xs text-gray-600">
+                                                        <span class="font-medium">${cd.component_name}</span>: ${cd.value != null ? Number(cd.value).toLocaleString('en-US', {maximumFractionDigits: 0}) : 'N/A'}
+                                                        ${cd.source_location ? `<span class="text-gray-400"> (${cd.source_location})</span>` : ''}
+                                                    </p>
+                                                `).join('')}
+                                            ` : ''}
+                                            <p class="mt-1 text-xs text-gray-500">Year: ${year} | Method: ${metric.resolution_method}</p>
+                                        </div>
+                                    </div>
+                                `;
+                                cellDiv.parentElement.classList.remove('bg-yellow-50');
+                            } else {
+                                cellDiv.innerHTML = `
+                                    <div class="tooltip-container text-yellow-500 w-full h-full flex items-center justify-center">
+                                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
+                                        <div class="tooltip text-red-600 bg-red-50 border-red-200">
+                                            ${metric.error || 'Data unavailable.'}
+                                        </div>
+                                    </div>
+                                `;
+                                cellDiv.parentElement.classList.add('bg-yellow-50');
+                            }
+                        }
+                    }
+                }
+
+                // Populate YoY column from persisted _yoy data
+                const yoyData = sctData['_yoy'];
+                if (yoyData) {
+                    for (const [canonicalName, yoyMetric] of Object.entries(yoyData)) {
+                        const rowIndex = _findRowIndexByName(canonicalName, nameToRow);
+                        if (rowIndex == null) continue;
+                        const yoyCellDiv = document.getElementById(`cell-${rowIndex}-YoY`);
+                        if (!yoyCellDiv) continue;
+
+                        if (yoyMetric.status === 'resolved' && yoyMetric.value != null) {
+                            const valNum = parseFloat(yoyMetric.value);
+                            const isPositive = valNum >= 0;
+                            const arrow = isPositive ? '▲' : '▼';
+                            const colorClass = isPositive ? 'text-leaf-500' : 'text-red-500';
+                            const yoy_cds = yoyMetric.component_details || [];
+                            yoyCellDiv.innerHTML = `
+                                <div class="tooltip-container w-full h-full text-center flex items-center justify-center">
+                                    <span class="${colorClass} font-semibold">${arrow} ${Math.abs(valNum).toFixed(1)}%</span>
+                                    <div class="tooltip">
+                                        <p><strong>Audit Trail</strong></p>
+                                        <p class="mt-1">Metric: <strong>${canonicalName}</strong></p>
+                                        <p>Data Sourced from: <strong>${wf.data_source}</strong></p>
+                                        ${yoyMetric.formula_used ? `<hr class="my-1 border-surface-border"><p>Formula: <em>${yoyMetric.formula_used}</em></p>` : ''}
+                                        ${yoy_cds.length ? `
+                                            <hr class="my-1 border-surface-border">
+                                            <p class="text-xs font-semibold text-gray-500 mb-0.5">Components:</p>
+                                            ${yoy_cds.map(cd => `
+                                                <p class="text-xs text-gray-600">
+                                                    <span class="font-medium">${cd.component_name}</span>: ${cd.value != null ? Number(cd.value).toLocaleString('en-US', {maximumFractionDigits: 0}) : 'N/A'}
+                                                </p>
+                                            `).join('')}
+                                        ` : ''}
+                                        <p class="mt-1 text-xs text-gray-500">Year: YoY</p>
+                                    </div>
+                                </div>
+                            `;
+                            yoyCellDiv.parentElement.classList.remove('bg-yellow-50');
+                        } else {
+                            yoyCellDiv.innerHTML = `
+                                <div class="tooltip-container text-yellow-500 w-full h-full flex items-center justify-center">
+                                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
+                                    <div class="tooltip text-red-600 bg-red-50 border-red-200">
+                                        ${yoyMetric.error || 'Data unavailable.'}
+                                    </div>
+                                </div>
+                            `;
+                            yoyCellDiv.parentElement.classList.add('bg-yellow-50');
+                        }
+                    }
+                }
+
+                // Show results footer with actual workflow timing data
+                if (wf.elapsed_seconds != null) {
+                    document.getElementById('sum-time').innerText = `${wf.elapsed_seconds}s`;
+                } else {
+                    document.getElementById('sum-time').innerText = '-- (restored)';
+                }
+                document.getElementById('sum-model').innerText = wf.model_name || wf.data_source || 'Azure OpenAI';
+                if (wf.token_count != null && wf.token_count > 0) {
+                    document.getElementById('sum-tokens').innerText = `${Number(wf.token_count).toLocaleString()} tokens`;
+                } else {
+                    document.getElementById('sum-tokens').innerText = '--';
+                }
+                summaryPlaceholder.classList.add('hidden');
+                summaryDiv.classList.remove('hidden');
+
+                // Restore logs if cached; otherwise show fallback
+                const cachedLog = logCacheByWorkflow[workflowId];
+                const logContent = document.getElementById('log-content');
+                logContent.innerHTML = '';
+                if (cachedLog && cachedLog.length > 0) {
+                    analysisLog = [...cachedLog];
+                    cachedLog.forEach(entry => renderLogEntry(entry));
+                } else {
+                    analysisLog = [];
+                    const div = document.createElement('div');
+                    div.className = 'text-gray-500 italic text-xs';
+                    div.id = 'log-empty';
+                    div.innerHTML = `<p>Detailed execution logs are not available for this historical run.</p>
+                        <p class="mt-1">Logs are only cached during the current browser session.</p>
+                        <p class="mt-1 text-gray-600">Company: ${wf.company_name || 'N/A'} | Years: ${wf.year_periods ? wf.year_periods.join(', ') : 'N/A'} | Source: ${wf.data_source || 'N/A'}</p>`;
+                    logContent.appendChild(div);
+                }
+                updateLogCount();
+
+                // Update button
+                btnAction.disabled = false;
+                btnAction.innerText = "New Analysis";
+                btnAction.classList.remove('bg-[#CCE1D7]', 'bg-[#0F573B]', 'hover:bg-[#0A3D28]');
+                btnAction.classList.add('bg-[#0F573B]', 'hover:bg-[#0A3D28]');
+
+            } catch (e) {
+                console.error('restoreWorkflow error:', e);
+                alert(`Error restoring workflow: ${e.message}`);
+            }
+        }
+
+        function _normalizeName(name) {
+            if (!name) return '';
+            return name.toLowerCase().replace(/\(loss\)/gi, '').replace(/\(x\)/gi, '').replace(/\s+/g, ' ').trim();
+        }
+
+        function _findRowIndexByName(canonicalName, nameToRow) {
+            if (!canonicalName) return null;
+            const target = _normalizeName(canonicalName);
+            if (!target) return null;
+
+            // Use pre-built lookup map if provided (fast path)
+            if (nameToRow) {
+                if (nameToRow[target] != null) return nameToRow[target];
+                // Fuzzy: check if any key includes target or vice versa
+                for (const [name, idx] of Object.entries(nameToRow)) {
+                    if (name.includes(target) || target.includes(name)) return idx;
+                }
+                return null;
+            }
+
+            // Fallback: linear scan through indicators
+            for (let i = 0; i < indicators.length; i++) {
+                const met = _normalizeName(indicators[i].met);
+                if (met === target) return i;
+                if (met.includes(target) || target.includes(met)) return i;
+            }
+            return null;
+        }
+
+        function resetToSelection() {
+            currentState = 'SELECTION';
+
+            // Clear ALL cells (not just selectedRows — handles history restore case)
+            indicators.forEach((_, rowIndex) => {
+                years.forEach(yr => {
+                    const cellDiv = document.getElementById(`cell-${rowIndex}-${yr}`);
+                    if (cellDiv) {
+                        cellDiv.innerHTML = '';
+                        cellDiv.classList.remove('flash-cell');
+                        cellDiv.parentElement.classList.remove('bg-yellow-50');
+                    }
+                });
+                // Clear YoY cell
+                const yoyDiv = document.getElementById(`cell-${rowIndex}-YoY`);
+                if (yoyDiv) {
+                    yoyDiv.innerHTML = '';
+                    yoyDiv.classList.remove('flash-cell');
+                    yoyDiv.parentElement.classList.remove('bg-yellow-50');
+                }
+
+                // Uncheck and reset row UI
+                const tr = tbody.children[rowIndex];
+                const chk = document.getElementById(`chk-${rowIndex}`);
+                if (chk) chk.checked = false;
+                if (tr) tr.classList.remove('row-selected');
+            });
+
+            selectedRows.clear();
+            currentWorkflowId = null;
+            receivedMetricCount = 0;
+
+            // Reset select-all checkbox
+            const selectAllChk = document.getElementById('select-all-chk');
+            selectAllChk.checked = false;
+            selectAllChk.indeterminate = false;
+
+            // Re-enable select-all
+            document.getElementById('select-all-chk').disabled = false;
+
+            // Clear log
+            analysisLog = [];
+            const content = document.getElementById('log-content');
+            content.innerHTML = '<div class="text-gray-600 italic text-xs" id="log-empty">No analysis running. Select metrics and run an analysis to see logs here.</div>';
+            updateLogCount();
+
+            // Reset UI components
+            companySelect.value = "";
+            companySelect.disabled = false;
+
+            summaryDiv.classList.add('hidden');
+            summaryPlaceholder.classList.remove('hidden');
+            // Reset stale text so it doesn't bleed through to the next analysis
+            document.getElementById('sum-time').innerText = '--';
+            document.getElementById('sum-model').innerText = '--';
+            document.getElementById('sum-tokens').innerText = '--';
+
+            btnAction.innerText = "Run analysis";
+            btnAction.classList.remove('bg-[#0F573B]', 'hover:bg-[#0A3D28]');
+            btnAction.classList.add('bg-[#0F573B]', 'hover:bg-[#0A3D28]');
+
+            updateButtonState();
+        }
+
+        // --- UTILS ---
+        function toggleSidebar() {
+            const sidebar = document.getElementById('sidebar');
+            sidebar.classList.toggle('sidebar-closed');
+        }
+
+        function toggleLogPanel() {
+            logPanelOpen = !logPanelOpen;
+            const panel = document.getElementById('log-panel');
+            if (logPanelOpen) {
+                panel.classList.remove('log-panel-closed');
+            } else {
+                panel.classList.add('log-panel-closed');
+            }
+        }
+
+        function addLogEntry(type, message) {
+            const now = new Date();
+            const ts = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}:${String(now.getSeconds()).padStart(2,'0')}`;
+            const entry = { ts, type, message };
+
+            // Deduplicate: skip exact repeats of the last entry
+            if (analysisLog.length > 0) {
+                const last = analysisLog[analysisLog.length - 1];
+                if (last.type === type && last.message === message) return;
+            }
+            analysisLog.push(entry);
+
+            renderLogEntry(entry);
+            updateLogCount();
+        }
+
+        function renderLogEntry(entry) {
+            const content = document.getElementById('log-content');
+            const emptyMsg = document.getElementById('log-empty');
+            if (emptyMsg) emptyMsg.remove();
+
+            const div = document.createElement('div');
+            div.className = `log-entry ${entry.type}`;
+            div.innerHTML = `<span class="ts">[${entry.ts}]</span> ${escapeHtml(entry.message)}`;
+            content.appendChild(div);
+            content.scrollTop = content.scrollHeight;
+        }
+
+        function clearLog() {
+            analysisLog = [];
+            const content = document.getElementById('log-content');
+            content.innerHTML = '<div class="text-gray-600 italic text-xs" id="log-empty">Log cleared.</div>';
+            updateLogCount();
+        }
+
+        function updateLogCount() {
+            document.getElementById('log-count').innerText = analysisLog.length;
+        }
+
+        function escapeHtml(str) {
+            const d = document.createElement('div');
+            d.textContent = str;
+            return d.innerHTML;
+        }
+
+        function toggleSelectAll() {
+            if (currentState !== 'SELECTION') return;
+            const chk = document.getElementById('select-all-chk');
+            const selectAll = chk.checked;
+
+            if (selectAll) {
+                // Select all rows
+                for (let i = 0; i < indicators.length; i++) {
+                    if (!selectedRows.has(i)) {
+                        selectedRows.add(i);
+                        document.getElementById(`chk-${i}`).checked = true;
+                        tbody.children[i].classList.add('row-selected');
+                    }
+                }
+            } else {
+                // Deselect all rows
+                for (let i = 0; i < indicators.length; i++) {
+                    if (selectedRows.has(i)) {
+                        selectedRows.delete(i);
+                        document.getElementById(`chk-${i}`).checked = false;
+                        tbody.children[i].classList.remove('row-selected');
+                    }
+                }
+            }
+            updateButtonState();
+        }
+
+        function updateSelectAllState() {
+            const chk = document.getElementById('select-all-chk');
+            if (selectedRows.size === 0) {
+                chk.checked = false;
+                chk.indeterminate = false;
+            } else if (selectedRows.size === indicators.length) {
+                chk.checked = true;
+                chk.indeterminate = false;
+            } else {
+                chk.checked = false;
+                chk.indeterminate = true;
+            }
+        }
+
+        async function loadCompanies() {
+            // Always add TEST (Mock) option
+            companySelect.innerHTML = '<option value="" disabled selected>Select company</option>';
+            const mockOpt = document.createElement('option');
+            mockOpt.value = 'TEST (Mock)';
+            mockOpt.textContent = 'TEST (Mock)';
+            companySelect.appendChild(mockOpt);
+
+            try {
+                const resp = await fetch(`${BACKEND_URL}/api/companies`);
+                if (!resp.ok) return;
+                const companies = await resp.json();
+                companies.forEach(c => {
+                    const opt = document.createElement('option');
+                    opt.value = c;
+                    opt.textContent = c;
+                    companySelect.appendChild(opt);
+                });
+            } catch (e) {
+                // Non-critical — TEST (Mock) is already available
+            }
+        }
+
+        // Boot
+        initTable();
+        loadCompanies();
+        loadHistory();
+
+        // Auto-restore the most recent workflow if the page was refreshed
+        // after an analysis completed.
+        (function _autoRestoreLastWorkflow() {
+            try {
+                const savedId = sessionStorage.getItem('lastWorkflowId');
+                const savedCompany = sessionStorage.getItem('lastCompany');
+                if (savedId && savedCompany) {
+                    // Wait for company select to be populated then restore
+                    const _tryRestore = () => {
+                        for (const opt of companySelect.options) {
+                            if (opt.value === savedCompany) {
+                                companySelect.value = savedCompany;
+                                companySelect.disabled = true;
+                                restoreWorkflow(parseInt(savedId));
+                                return;
+                            }
+                        }
+                        // Company not loaded yet — retry after a short delay
+                        setTimeout(_tryRestore, 500);
+                    };
+                    _tryRestore();
+                }
+            } catch (_) {}
+        })();
+    </script>
+</body>
+</html>
